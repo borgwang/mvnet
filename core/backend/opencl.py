@@ -8,6 +8,7 @@ from env import DEBUG, GRAPH, LAZY
 from core.backend.base import Array
 from core.dtype import int32, float32
 from utils.math import prod
+from utils.helper import varnamegetter
 
 class ClContext:
     def __init__(self):
@@ -269,20 +270,38 @@ class ClArray(Array):
         self.c_contiguous, self.f_contiguous = True, False
         self.__update_contiguousness()
 
-    def _resolve(self):
+    def _resolve(self, i):
+        # TODO: variable name conflict
         operator = self.operator
         operands = {}
-        for name, arr in self.operands.items():
+        for j, (name, arr) in enumerate(self.operands.items()):
             if arr.is_lazy:
-                op, opr = arr._resolve()
-                operator = operator.replace(name, f"({op})")
-                operands.update(opr)
-            else:
-                operands[name] = arr
+                continue
+            newname = varnamegetter.get(arr)
+            operands[newname] = arr
+            operator = operator.replace(name, newname)
+            #if DEBUG: print(f"[DEBUG] i={i} normal_arr_{j} rename {arr.name}->{newname}")
+
+        for j, (name, arr) in enumerate(self.operands.items()):
+            if not arr.is_lazy:
+                continue
+            op, opd = arr._resolve(i+1)
+            operands.update(opd)
+            operator = operator.replace(name, f"({op})")
+            #if DEBUG: print(f"[DEBUG] i={i} lazy_arr_{j} lazy expr replace {arr.name}->({op})")
+        if DEBUG: print(f"[DEBUG] i={i} _resolve finish, operator={operator}")
         return operator, operands
 
     def resolve(self):
-        operator, operands = self._resolve()
+        varnamegetter.reset()
+        if DEBUG: print("[DEBUG] b * (w + x) + (w + b) * x")
+        operator, operands = self._resolve(0)
+        if DEBUG: print(f"[DEBUG] operator: {operator}")
+        ## expensive
+        #from sympy import sympify
+        #operator = str(sympify(operator))
+        #if DEBUG: print(f"[DEBUG] operator after simplify: {operator}")
+        if DEBUG: print(f"[DEBUG] operands: {operands}")
         return inplace_op(operator, operands)
 
     @property
@@ -304,17 +323,16 @@ class ClArray(Array):
         if not LAZY:
             return binary_op("add", self, other, ret=out)
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator="a+c",
-                       operands={"a": a, "c": b}, is_lazy=True)
+        return ClArray(shape=a.shape, dtype=a.dtype, operator="A+B",
+                       operands={"A": a, "B": b}, is_lazy=True)
     def sub(self, other, out=None): return binary_op("sub", self, other, ret=out)
     def div(self, other, out=None): return binary_op("div", self, other, ret=out)
     def mul(self, other, out=None):
         if not LAZY:
             return binary_op("mul", self, other, ret=out)
-        # input can be either normal array or lazy array, return a lazy array
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator="a*b",
-                       operands={"a": a, "b": b}, is_lazy=True)
+        return ClArray(shape=a.shape, dtype=a.dtype, operator="A*B",
+                       operands={"A": a, "B": b}, is_lazy=True)
 
     def pow(self, other, out=None): return binary_op("pow", self, other, ret=out)
     def matmul(self, other): return matmul_op(self, other)

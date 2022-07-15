@@ -27,6 +27,7 @@ class Tensor:
         self.dependency = dependency
 
         self.name = name
+        self.array.name = name
         self.outdegree = 0
         self.bwdcost = 0
 
