@@ -4,26 +4,6 @@ from env import GRAPH
 from utils.helper import timer, genname
 from utils.math import argsort
 
-def binary_ops(func):
-    def wrapper(ts1, ts2, *args, **kwargs):
-        arr, grad_fn1, grad_fn2 = func(ts1.values, ts2.values, *args, **kwargs)
-        grad_fn1 = unbroadcast(grad_fn1, ts1.shape)
-        grad_fn2 = unbroadcast(grad_fn2, ts2.shape)
-        requires_grad = (ts1.requires_grad and grad_fn1) or (ts2.requires_grad and grad_fn2)
-        dependency = []
-        if ts1.requires_grad and grad_fn1:
-            if GRAPH: grad_fn1=timer(grad_fn1)
-            dependency.append(dict(tensor=ts1, grad_fn=grad_fn1))
-            ts1.outdegree += 1
-        if ts2.requires_grad and grad_fn2:
-            if GRAPH: grad_fn2=timer(grad_fn2)
-            dependency.append(dict(tensor=ts2, grad_fn=grad_fn2))
-            ts2.outdegree += 1
-        name = genname(func.__name__, ts1, ts2)
-        from core.tensor import Tensor
-        return Tensor(arr, requires_grad, dependency, name=name)
-    return wrapper
-
 def unary_ops(func):
     def wrapper(ts, *args, **kwargs):
         arr, grad_fn = func(ts.values, *args, **kwargs)
@@ -48,6 +28,28 @@ def unbroadcast(func, shape):
             if shape[i] == 1:
                 ret = ret.sum(axis=i, keepdims=True)
         return ret
+    return wrapper
+
+def binary_ops(func):
+    def wrapper(ts1, ts2, *args, **kwargs):
+        arr, grad_fn1, grad_fn2 = func(ts1.values, ts2.values, *args, **kwargs)
+        if grad_fn1:
+            grad_fn1 = unbroadcast(grad_fn1, ts1.shape)
+        if grad_fn2:
+            grad_fn2 = unbroadcast(grad_fn2, ts2.shape)
+        requires_grad = (ts1.requires_grad and grad_fn1) or (ts2.requires_grad and grad_fn2)
+        dependency = []
+        if ts1.requires_grad and grad_fn1:
+            if GRAPH: grad_fn1=timer(grad_fn1)
+            dependency.append(dict(tensor=ts1, grad_fn=grad_fn1))
+            ts1.outdegree += 1
+        if ts2.requires_grad and grad_fn2:
+            if GRAPH: grad_fn2=timer(grad_fn2)
+            dependency.append(dict(tensor=ts2, grad_fn=grad_fn2))
+            ts2.outdegree += 1
+        name = genname(func.__name__, ts1, ts2)
+        from core.tensor import Tensor
+        return Tensor(arr, requires_grad, dependency, name=name)
     return wrapper
 
 @binary_ops

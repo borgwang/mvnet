@@ -6,6 +6,12 @@ mvnn is a small but fully functional deep learning framework built on top of [ti
 - automatic differentiation
 - support numpy/opencl backends
 
+### jit
+- [] rename variable in the experssion
+- [] support unary ops
+- [] rules of node merge
+- [] backward?
+
 ### TODOs
 - ops
   - conv/tconv op

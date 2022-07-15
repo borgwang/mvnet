@@ -4,12 +4,12 @@ from collections import defaultdict
 import numpy as np
 import pyopencl
 
-from env import DEBUG, GRAPH
+from env import DEBUG, GRAPH, LAZY
 from core.backend.base import Array
 from core.dtype import int32, float32
 from utils.math import prod
 
-class CLContext:
+class ClContext:
     def __init__(self):
         self.ctx, self.queue = None, None
         platform = pyopencl.get_platforms()[0]
@@ -23,7 +23,7 @@ class CLContext:
 
     @lru_cache(maxsize=None)
     def build(self, name, program):
-        if DEBUG > 1: print(f"[DEBUG] program {name}: \n {program}")
+        if DEBUG > 1 and name != "contiguous_op": print(f"[DEBUG] program {name}: \n {program}")
         kernel = pyopencl.Program(self.ctx, program).build().__getattr__(name)
         return lambda *args: kernel(self.queue, *args)
 
@@ -40,7 +40,7 @@ class CLContext:
     def enqueue(self, task, *args, **kwargs):
         getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs)
 
-cl = CLContext()
+cl = ClContext()
 
 def unary_op(name, a, ret=None, **kwargs):
     if ret is None:
@@ -57,6 +57,31 @@ def unary_op(name, a, ret=None, **kwargs):
     }}""")
     args = [int32(s) for ss in zip(a.strides, ret.strides) for s in ss] + [int32(a.offset)]
     e = op((prod(a.shape),), None, *args, a.buffer, ret.buffer)
+    if GRAPH: e.wait()
+    return ret
+
+def inplace_op(code, inp):
+    a = inp[list(inp.keys())[0]]
+    ret = a.__class__(shape=a.shape, dtype=a.dtype)
+    args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
+    args += "".join(f"int {name}_ofst, " for name in inp)
+    args += "".join(f"__global const float *inp_{name}, " for name in inp)
+    update = ""
+    for i in range(ret.ndim):
+        update += f"idx=ptr/res_s{i}; ptr%=res_s{i};" + "".join(f"{name}_i+=idx*{name}_s{i};" for name in inp)
+    assign = ";".join(f"float {name}=inp_{name}[{name}_i+{name}_ofst]" for name in inp)
+    src = f"""__kernel void inplace_op({args} __global float *ret) {{
+      {";".join(f"int {name}_i=0" for name in inp)};
+      int idx=0, gl_id=get_global_id(0); int ptr=gl_id;
+      {update};
+      {assign};
+      ret[gl_id] = {code};
+    }}"""
+    op = cl.build("inplace_op", src)
+    args = [int32(s) for ss in zip(*[x.strides for x in (list(inp.values())+[ret])]) for s in ss]
+    args += [int32(x.offset) for x in inp.values()]
+    args += [x.buffer for x in inp.values()]
+    e = op((prod(a.shape),), None, *args, ret.buffer)
     if GRAPH: e.wait()
     return ret
 
@@ -220,8 +245,8 @@ def reduce_op(name, x, axis=None, keepdims=True):
 
 class ClArray(Array):
     """Pyopencl's multidimension array class only implement limited functionality. So we write our own."""
-    def __init__(self, data=None, shape=None, dtype=float32):
-        super().__init__(shape, dtype)
+    def __init__(self, data=None, shape=None, dtype=float32, is_lazy=False, **kwargs):
+        super().__init__(shape, dtype, is_lazy)
         if isinstance(data, pyopencl.Buffer):
             self.buffer = data
             assert self.shape is not None, "cannot infer shape when initialize using clbuffer"
@@ -231,12 +256,34 @@ class ClArray(Array):
                 self.shape = data.shape
             else:
                 assert self.shape is not None, "cannot infer shape when without data"
-            self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
+            if not is_lazy:
+                self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
+            else:
+                self.buffer = None
+                self.operator = kwargs["operator"]
+                self.operands = kwargs["operands"]
+
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(len(self.shape)))
         self.offset = 0  # offset relative to the beginning of the buffer
         self.c_contiguous, self.f_contiguous = True, False
         self.__update_contiguousness()
+
+    def _resolve(self):
+        operator = self.operator
+        operands = {}
+        for name, arr in self.operands.items():
+            if arr.is_lazy:
+                op, opr = arr._resolve()
+                operator = operator.replace(name, f"({op})")
+                operands.update(opr)
+            else:
+                operands[name] = arr
+        return operator, operands
+
+    def resolve(self):
+        operator, operands = self._resolve()
+        return inplace_op(operator, operands)
 
     @property
     def size(self):
@@ -253,10 +300,22 @@ class ClArray(Array):
     def relu(self): return unary_op("relu", self)
 
     # ##### Binary Ops #####
-    def add(self, other, out=None): return binary_op("add", self, other, ret=out)
+    def add(self, other, out=None):
+        if not LAZY:
+            return binary_op("add", self, other, ret=out)
+        a, b = Array.broadcast(self, other)
+        return ClArray(shape=a.shape, dtype=a.dtype, operator="a+c",
+                       operands={"a": a, "c": b}, is_lazy=True)
     def sub(self, other, out=None): return binary_op("sub", self, other, ret=out)
     def div(self, other, out=None): return binary_op("div", self, other, ret=out)
-    def mul(self, other, out=None): return binary_op("mul", self, other, ret=out)
+    def mul(self, other, out=None):
+        if not LAZY:
+            return binary_op("mul", self, other, ret=out)
+        # input can be either normal array or lazy array, return a lazy array
+        a, b = Array.broadcast(self, other)
+        return ClArray(shape=a.shape, dtype=a.dtype, operator="a*b",
+                       operands={"a": a, "b": b}, is_lazy=True)
+
     def pow(self, other, out=None): return binary_op("pow", self, other, ret=out)
     def matmul(self, other): return matmul_op(self, other)
     def eq(self, other): return binary_op("eq", self, other)

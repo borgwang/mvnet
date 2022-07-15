@@ -1,6 +1,6 @@
 import numpy as np
 import core.autograd.ops as ops
-from env import GRAPH, BACKEND
+from env import GRAPH, BACKEND, LAZY
 from core.dtype import float32
 
 from core.backend.numpy import NpArray as CPUArray
@@ -9,6 +9,7 @@ if BACKEND == "opencl":
     from core.backend.opencl import ClArray as GPUArray
 elif BACKEND == "cuda":
     from core.backend.cuda import CuArray as GPUArray
+
 
 def as_tensor(obj):
     if not isinstance(obj, Tensor):
@@ -199,7 +200,7 @@ class Tensor:
             grad = CPUArray(grad, dtype=self.dtype)
 
         if self.requires_grad:
-            self.grad = grad if self.grad is None else self.grad + grad
+            self.grad = self.grad + grad if self.grad is not None else grad
 
         if self.outdegree <= 0:
             for dep in self.dependency:
@@ -211,3 +212,7 @@ class Tensor:
 
     def zero_grad(self):
         self.grad = None
+
+    def resolve(self):
+        assert LAZY and self.array.is_lazy
+        return self.array.resolve()

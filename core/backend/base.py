@@ -1,13 +1,18 @@
 from core.dtype import float32
 
 class Array:
-    def __init__(self, shape=None, dtype=float32):
+
+    def __init__(self, shape=None, dtype=float32, is_lazy=False):
+        self.is_lazy = is_lazy
         self.shape, self.dtype = shape, dtype
         self.register_ops()
 
     def __repr__(self):
-        return (f"<{self.__class__.__name__} dtype={self.dtype} shape={self.shape} "
-                f"strides={self.strides} size={self.size}>")
+        clsname = self.__class__.__name__
+        if self.is_lazy:
+            clsname = "Lazy" + clsname
+        return (f"<{clsname} dtype={self.dtype} shape={self.shape} "
+                f"strides={self.strides}>")
     @property
     def size(self):
         raise NotImplementedError
@@ -110,4 +115,3 @@ class Array:
     def zeros(cls, shape, dtype=float32): return cls.full(shape, 0, dtype)
     @classmethod
     def ones(cls, shape, dtype=float32): return cls.full(shape, 1, dtype)
-
