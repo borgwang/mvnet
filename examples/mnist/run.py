@@ -2,7 +2,6 @@
 
 import runtime_path  # isort:skip
 
-import matplotlib.pyplot as plt
 import argparse
 import gzip
 import os
@@ -20,9 +19,8 @@ from core.tensor import Tensor
 from utils.data_iterator import BatchIterator
 from utils.downloader import download_url
 from utils.evaluator import AccEvaluator
+from utils.helper import plot_graph
 from env import DEBUG, GRAPH
-
-import networkx as nx
 
 def get_one_hot(targets, nb_classes):
     return np.eye(nb_classes)[np.array(targets).reshape(-1)]
@@ -39,41 +37,6 @@ def prepare_dataset(data_dir):
     with gzip.open(save_path, "rb") as f:
         return pickle.load(f, encoding="latin1")
 
-def build_graph(node, G):
-    if id(node) not in G.nodes:
-        G.add_node(id(node), name=node.name, shape=node.shape, outdegree=node.outdegree, bwdcost=node.bwdcost)
-        for dep in node.dependency:
-            subnode = dep["tensor"]
-            G = build_graph(subnode, G)
-            edge = (id(node), id(subnode))
-            if edge in G.edges:
-                cnt = nx.get_edge_attributes(G, "cnt")[edge]["cnt"]
-                nx.set_edge_attributes(G, {edge: {"cnt": cnt+1}})
-            else:
-                G.add_edge(*edge, cnt=1)
-    return G
-
-def plot_graph(start):
-    G = nx.Graph()
-    G = build_graph(start, G)
-    plt.figure(figsize=(24, 20))
-    pos = nx.spring_layout(G)
-    nx.draw(G, pos)
-    edge_labels = {}
-    for u, v, data in G.edges(data=True):
-        edge_labels[u, v] = f"{data['cnt']}"
-
-    total_bwdcost = 0
-    node_labels = {}
-    for n, data in G.nodes(data=True):
-        node_labels[n] = f"{data['name']}\n{data['shape']}\nbwdcosst: {data['bwdcost']:.4f}s"
-        if GRAPH: print(f"node: {data['name']} cost: {data['bwdcost']:.6f}")
-        total_bwdcost += data["bwdcost"]
-    nx.draw_networkx_labels(G, pos, labels=node_labels)
-    if GRAPH: print(f"total_bwdcost: {total_bwdcost:.4f}")
-    plt.savefig("test.png")
-    sys.exit()
-
 def main(args):
     if args.seed >= 0:
         np.random.seed(args.seed)
@@ -87,11 +50,16 @@ def main(args):
     test_x = Tensor(test_x).to(args.device)
     test_y = Tensor(test_y)
 
+    """
     net = SequentialNet(
             Dense(256), ReLU(),
             Dense(128), ReLU(),
             Dense(64), ReLU(),
             Dense(32), ReLU(),
+            Dense(10)).to(args.device)
+    """
+    net = SequentialNet(
+            Dense(256), ReLU(),
             Dense(10)).to(args.device)
     optim = Adam(net.get_parameters(), lr=args.lr)
     loss_fn = SoftmaxCrossEntropyLoss()
@@ -107,8 +75,9 @@ def main(args):
             loss = loss_fn(pred, y)
             if GRAPH: ts = time.monotonic()
             loss.backward()
-            if GRAPH: print("loss.backward() cost: ", time.monotonic() - ts)
             if GRAPH: plot_graph(loss)
+            import pdb; pdb.set_trace()
+            if GRAPH: print("loss.backward() cost: ", time.monotonic() - ts)
             optim.step()
             if args.onepass: sys.exit()
         print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))
@@ -124,7 +93,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", default="./examples/mnist/data", type=str)
     parser.add_argument("--lr", default=1e-3, type=float)
     parser.add_argument("--batch_size", default=128, type=int)
-    parser.add_argument("--seed", default=-1, type=int)
+    parser.add_argument("--seed", default=0, type=int)
 
     parser.add_argument("--onepass", default=0, type=int)
     parser.add_argument("--eval", default=0, type=int)

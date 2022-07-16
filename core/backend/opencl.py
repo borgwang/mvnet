@@ -8,7 +8,8 @@ from env import DEBUG, GRAPH, LAZY
 from core.backend.base import Array
 from core.dtype import int32, float32
 from utils.math import prod
-from utils.helper import varnamegetter
+from utils.helper import varnamegetter, kernelstat
+
 
 class ClContext:
     def __init__(self):
@@ -20,7 +21,7 @@ class ClContext:
         self.ctx = pyopencl.Context(devices)
         self.queue = pyopencl.CommandQueue(self.ctx)
         import pyopencl.clrandom as clrandom
-        self.rng = clrandom.PhiloxGenerator(self.ctx)
+        self.rng = clrandom.PhiloxGenerator(self.ctx, seed=0)
 
     @lru_cache(maxsize=None)
     def build(self, name, program):
@@ -47,21 +48,24 @@ def unary_op(name, a, ret=None, **kwargs):
     if ret is None:
         ret = a.__class__(shape=a.shape, dtype=a.dtype)  # TODO
     assert ret.c_contiguous, f"ret must be contiguous. {ret}"
-    code_map = {"noop": "a", "neg": "-a", "log": "log(a)", "exp": "exp(a)", "relu": "max(a, 0.0f)", "sign": "sign(a)"}
+    code_map = {"noop": "A", "neg": "-A", "log": "log(A)", "exp": "exp(A)", "relu": "max(A, 0.0f)", "sign": "sign(A)"}
     op = cl.build("unary_op", f"""__kernel void unary_op(
         {''.join([f'int a_s{i}, int res_s{i}, ' for i in range(a.ndim)])}
-        int a_ofst, __global const float *A, __global float *B) {{
+        int a_ofst, __global const float *inp, __global float *ret) {{
       int a_i=0, idx=0, gl_id=get_global_id(0); int ptr=gl_id;
       {''.join([f'idx=ptr/res_s{i}; ptr%=res_s{i}; a_i+=idx*a_s{i};' for i in range(a.ndim)])}
-      float a=A[a_i+a_ofst];
-      B[gl_id]={code_map[name]};
+      float A=inp[a_i+a_ofst];
+      ret[gl_id]={code_map[name]};
     }}""")
     args = [int32(s) for ss in zip(a.strides, ret.strides) for s in ss] + [int32(a.offset)]
     e = op((prod(a.shape),), None, *args, a.buffer, ret.buffer)
+    kernelstat.log("unary")
     if GRAPH: e.wait()
     return ret
 
-def inplace_op(code, inp):
+def elementwise_op(code, inp):
+    assert len(set([tuple(x.shape) for x in inp.values()])) == 1, \
+        f"Invalid input shape for elementwise op {inp}"
     a = inp[list(inp.keys())[0]]
     ret = a.__class__(shape=a.shape, dtype=a.dtype)
     args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
@@ -71,18 +75,19 @@ def inplace_op(code, inp):
     for i in range(ret.ndim):
         update += f"idx=ptr/res_s{i}; ptr%=res_s{i};" + "".join(f"{name}_i+=idx*{name}_s{i};" for name in inp)
     assign = ";".join(f"float {name}=inp_{name}[{name}_i+{name}_ofst]" for name in inp)
-    src = f"""__kernel void inplace_op({args} __global float *ret) {{
+    src = f"""__kernel void elementwise_op({args} __global float *ret) {{
       {";".join(f"int {name}_i=0" for name in inp)};
       int idx=0, gl_id=get_global_id(0); int ptr=gl_id;
       {update};
       {assign};
       ret[gl_id] = {code};
     }}"""
-    op = cl.build("inplace_op", src)
+    op = cl.build("elementwise_op", src)
     args = [int32(s) for ss in zip(*[x.strides for x in (list(inp.values())+[ret])]) for s in ss]
     args += [int32(x.offset) for x in inp.values()]
     args += [x.buffer for x in inp.values()]
     e = op((prod(a.shape),), None, *args, ret.buffer)
+    kernelstat.log("elementwise")
     if GRAPH: e.wait()
     return ret
 
@@ -92,20 +97,21 @@ def binary_op(name, a, b, ret=None):
         ret = a.__class__(shape=a.shape, dtype=a.dtype)
     assert ret.c_contiguous, f"ret must be contiguous. {ret}"
     ret_strides = (1,) if not ret.strides else ret.strides
-    code_map = {"add": "a+b", "sub": "a-b", "div": "a/b", "mul": "a*b", "pow": "pow(a,b)",
-                "eq": "(float)isequal(a,b)", "gt": "(float)isgreater(a,b)", "ge": "(float)isgreaterequal(a,b)",
-                "drelu": "b>0?a:0.0f"}
+    code_map = {"add": "A+B", "sub": "A-B", "div": "A/B", "mul": "A*B", "pow": "pow(A,B)",
+                "eq": "(float)isequal(A,B)", "gt": "(float)isgreater(A,B)", "ge": "(float)isgreaterequal(A,B)",
+                "drelu": "B>0?A:0.0f"}
     op = cl.build("binary_op", f"""__kernel void binary_op(
         {''.join([f'int a_s{i}, int b_s{i}, int res_s{i}, ' for i in range(a.ndim)])}
-        int a_ofst, int b_ofst, __global const float *A, __global const float *B, __global float *C) {{
+        int a_ofst, int b_ofst, __global const float *inp_1, __global const float *inp_2, __global float *ret) {{
       int a_i=0, b_i=0, idx=0, gl_id=get_global_id(0); int ptr=gl_id;
       {''.join(f'idx=ptr/res_s{i}; ptr%=res_s{i}; a_i+=idx*a_s{i}; b_i+=idx*b_s{i};' for i in range(a.ndim))}
-      float a=A[a_i+a_ofst], b=B[b_i+b_ofst];
-      C[gl_id] = {code_map[name]};
+      float A=inp_1[a_i+a_ofst], B=inp_2[b_i+b_ofst];
+      ret[gl_id] = {code_map[name]};
     }}""")
     args = [int32(s) for ss in zip(a.strides, b.strides, ret_strides) for s in ss]
     args += [int32(s) for s in [a.offset, b.offset]]
     e = op((prod(a.shape),), None, *args, a.buffer, b.buffer, ret.buffer)
+    kernelstat.log("binary")
     if GRAPH: e.wait()
     return ret
 
@@ -154,12 +160,13 @@ def matmul_op(a, b):
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
     e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
+    kernelstat.log("matmul")
     if GRAPH: e.wait()
     for axis in squeezes:
         ret = ret.squeeze(axis)
     return ret
 
-def contiguous_op(x):
+def contiguous_op(x, inplace=False):
     ret = x.__class__(shape=x.shape, dtype=x.dtype)
     x_ndim, x_shape, x_strides = x.ndim, x.shape, x.strides
     if not x_ndim:
@@ -178,12 +185,15 @@ def contiguous_op(x):
     op = cl.build("contiguous_op", src)
     args = [int32(s) for ss in zip(x_shape, x_strides) for s in ss]
     e = op((prod(x_shape),), None, *args, int32(x.offset), x.buffer, ret.buffer)
+    kernelstat.log("contiguous")
+    if inplace:
+        ret = x.transport(ret)
     if GRAPH: e.wait()
     return ret
 
 def reduce_op(name, x, axis=None, keepdims=True):
-    x = contiguous_op(x) if not x.c_contiguous else x
-    code_map = {"sum": "a+b", "max": "max(a,b)"}
+    x = contiguous_op(x, inplace=True) if not x.c_contiguous else x
+    code_map = {"sum": "A+B", "max": "max(A,B)"}
     padval_map = {"sum": "0.0f", "max": "-INFINITY"}
     x_shp = x.shape
     if axis is None:
@@ -222,21 +232,22 @@ def reduce_op(name, x, axis=None, keepdims=True):
     # NOTE: calculate offset to get the proper global index
     offset = f"gl_id_0*{'0' if axis==0 else '1' if axis==ndim-1 else 'gl_s_2'}*(gl_s_{axis}-size)"
     op = cl.build("reduce_op", f"""__kernel void reduce_op(int size, int ofst,
-        __global const float *A, __local float *B, __global float *C) {{
+        __global const float *inp, __local float *lcl, __global float *ret) {{
       {''.join([f'int gl_id_{i}=get_global_id({i});int gl_s_{i}=get_global_size({i});int grp_id_{i}=get_group_id({i});int grp_s_{i}=get_local_size({i});' for i in range(ndim)])}
       int lcl_id=get_local_id({axis});
-      B[lcl_id] = gl_id_{axis}<size?A[{gl2lcl}-{offset}+ofst]:{padval_map[name]};
+      lcl[lcl_id] = gl_id_{axis}<size?inp[{gl2lcl}-{offset}+ofst]:{padval_map[name]};
       barrier(CLK_LOCAL_MEM_FENCE);
       for (int stride=grp_s_{axis}>>1; stride>0; stride>>=1) {{
-        float a = B[lcl_id], b = B[lcl_id+stride];
-        if (lcl_id<stride) B[lcl_id]={code_map[name]};
+        float A = lcl[lcl_id], B = lcl[lcl_id+stride];
+        if (lcl_id<stride) lcl[lcl_id]={code_map[name]};
         barrier(CLK_LOCAL_MEM_FENCE);
       }}
-      if (lcl_id == 0) C[{lcl2gl}]=B[0];
+      if (lcl_id == 0) ret[{lcl2gl}]=lcl[0];
     }}""")
     local_mem = cl.alloc_local_memory(x.dtype().itemsize * grp_size)
     local_size = tuple(grp_size if i == axis else 1 for i in range(ndim))
     e = op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
+    kernelstat.log("reduce")
     if GRAPH: e.wait()
     if DEBUG > 1: print(f"[DEBUG] x_shp: {x_shp} ret_shape: {ret_shape} grp_size: {grp_size} n_grps: {n_grps} size: {size} global_size: {global_size} local_size: {local_size} axis={axis} ndim={ndim} offset={offset}")
     if n_grps > 1:
@@ -246,63 +257,29 @@ def reduce_op(name, x, axis=None, keepdims=True):
 
 class ClArray(Array):
     """Pyopencl's multidimension array class only implement limited functionality. So we write our own."""
+    #asd
     def __init__(self, data=None, shape=None, dtype=float32, is_lazy=False, **kwargs):
         super().__init__(shape, dtype, is_lazy)
-        if isinstance(data, pyopencl.Buffer):
-            self.buffer = data
-            assert self.shape is not None, "cannot infer shape when initialize using clbuffer"
+        if is_lazy:
+            self.operator = kwargs["operator"]
+            self.operands = kwargs["operands"]
         else:
-            if data is not None:
-                data = np.asarray(data, dtype=self.dtype)
-                self.shape = data.shape
+            if isinstance(data, pyopencl.Buffer):
+                self.buffer = data
+                assert self.shape is not None, "cannot infer shape when initialize using clbuffer"
             else:
-                assert self.shape is not None, "cannot infer shape when without data"
-            if not is_lazy:
+                if data is not None:
+                    data = np.asarray(data, dtype=self.dtype)
+                    self.shape = data.shape
+                else:
+                    assert self.shape is not None, "cannot infer shape when without data"
                 self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
-            else:
-                self.buffer = None
-                self.operator = kwargs["operator"]
-                self.operands = kwargs["operands"]
-
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(len(self.shape)))
         self.offset = 0  # offset relative to the beginning of the buffer
         self.c_contiguous, self.f_contiguous = True, False
         self.__update_contiguousness()
-
-    def _resolve(self, i):
-        # TODO: variable name conflict
-        operator = self.operator
-        operands = {}
-        for j, (name, arr) in enumerate(self.operands.items()):
-            if arr.is_lazy:
-                continue
-            newname = varnamegetter.get(arr)
-            operands[newname] = arr
-            operator = operator.replace(name, newname)
-            #if DEBUG: print(f"[DEBUG] i={i} normal_arr_{j} rename {arr.name}->{newname}")
-
-        for j, (name, arr) in enumerate(self.operands.items()):
-            if not arr.is_lazy:
-                continue
-            op, opd = arr._resolve(i+1)
-            operands.update(opd)
-            operator = operator.replace(name, f"({op})")
-            #if DEBUG: print(f"[DEBUG] i={i} lazy_arr_{j} lazy expr replace {arr.name}->({op})")
-        if DEBUG: print(f"[DEBUG] i={i} _resolve finish, operator={operator}")
-        return operator, operands
-
-    def resolve(self):
-        varnamegetter.reset()
-        if DEBUG: print("[DEBUG] b * (w + x) + (w + b) * x")
-        operator, operands = self._resolve(0)
-        if DEBUG: print(f"[DEBUG] operator: {operator}")
-        ## expensive
-        #from sympy import sympify
-        #operator = str(sympify(operator))
-        #if DEBUG: print(f"[DEBUG] operator after simplify: {operator}")
-        if DEBUG: print(f"[DEBUG] operands: {operands}")
-        return inplace_op(operator, operands)
+        self.outdegree = 0
 
     @property
     def size(self):
@@ -313,37 +290,178 @@ class ClArray(Array):
         return len(self.shape)
 
     # ##### Unary Ops #####
-    def neg(self): return unary_op("neg", self)
-    def exp(self): return unary_op("exp", self)
-    def log(self): return unary_op("log", self)
-    def relu(self): return unary_op("relu", self)
+    def neg(self):
+        if not LAZY: return unary_op("neg", self)
+        self.outdegree += 1
+        return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "-A"},
+                       operands={"A": self}, is_lazy=True)
+    def exp(self):
+        if not LAZY: return unary_op("exp", self)
+        self.outdegree += 1
+        return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "exp(A)"},
+                       operands={"A": self}, is_lazy=True)
+    def log(self):
+        if not LAZY: return unary_op("log", self)
+        self.outdegree += 1
+        return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "log(A)"},
+                       operands={"A": self}, is_lazy=True)
+    def relu(self):
+        if not LAZY: return unary_op("relu", self)
+        self.outdegree += 1
+        return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "max(A,0.0f)"},
+                       operands={"A": self}, is_lazy=True)
+
+    @staticmethod
+    def invoke(operator, operands):
+        # computate merged op
+        if operator["type"] == "elementwise":
+            return elementwise_op(operator["code"], operands, **operator.get("args", {}))
+        elif operator["type"] == "reduce":
+            return reduce_op(operator["code"], operands["A"], **operator.get("args", {}))
+        elif operator["type"] == "matmul":
+            return matmul_op(operands["A"], operands["B"], **operator.get("args", {}))
+
+    def _resolve(self, i):
+        if DEBUG: print(f"{3*' '*i}[resolve] i={i} _resolve [{str(id(self))[-4:]}] start")
+        # 返回前置节点尽可能合并后的操作以及操作数
+        operator = copy.deepcopy(self.operator)
+        operands = {}
+        # for eager operands
+        for name, arr in self.operands.items():
+            if arr.is_lazy:
+                continue
+            if operator["type"] == "elementwise":
+                newname = varnamegetter.get(arr)
+                operands[newname] = arr
+                operator["code"] = operator["code"].replace(name, newname)
+            else:
+                operands[name] = arr
+        # for lazy operands
+        for name, arr in self.operands.items():
+            if not arr.is_lazy:
+                continue
+            op, opd = arr._resolve(i+1)
+            if operator["type"] != op["type"]:
+                if DEBUG: print(f"{3*' '*i}[resolve] {operator['type']} != {op['type']}. invoke compute {op}, operands={[(k, str(id(v))[-4:]) for k,v in opd.items()]}")
+                eager = self.invoke(op, opd)
+                arr.buffer = eager.buffer
+                operands[name] = arr
+            elif arr.outdegree > 1:
+                if DEBUG: print(f"{3*' '*i}[resolve] multi-branch operand {str(id(arr))[-4:]}. invoke compute {op}, operands={[(k, str(id(v))[-4:]) for k,v in opd.items()]}")
+                eager = self.invoke(op, opd)
+                arr.buffer, arr.is_lazy = eager.buffer, False
+                operands[name] = arr
+            else:
+                if op["type"] == "elementwise":
+                    if arr.outdegree > 1:
+                        eager = self.invoke(op, opd)
+                        arr.buffer = eager.buffer
+                        arr.is_lazy = False
+                        operands[name] = arr
+                    else:
+                        operands.update(opd)
+                        operator["code"] = operator["code"].replace(name, f"({op['code']})")
+        if DEBUG: print(f"{3*' '*i}[resolve] i={i} _resolve [{str(id(self))[-4:]}] finish. operator={operator}, operands: {[(k, str(id(v))[-4:]) for k, v in operands.items()]}")
+        return operator, operands
+
+    def resolve(self):
+        varnamegetter.reset()
+        operator, operands = self._resolve(0)
+        if DEBUG: print(f"[resolve] final invoke compute {operator}, operands={[(k, str(id(v))[-4:]) for k,v in operands.items()]}")
+        return self.invoke(operator, operands)
 
     # ##### Binary Ops #####
     def add(self, other, out=None):
-        if not LAZY:
-            return binary_op("add", self, other, ret=out)
+        if not LAZY: return binary_op("add", self, other, ret=out)
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator="A+B",
-                       operands={"A": a, "B": b}, is_lazy=True)
-    def sub(self, other, out=None): return binary_op("sub", self, other, ret=out)
-    def div(self, other, out=None): return binary_op("div", self, other, ret=out)
-    def mul(self, other, out=None):
-        if not LAZY:
-            return binary_op("mul", self, other, ret=out)
-        a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator="A*B",
+        a.outdegree += 1; b.outdegree += 1
+        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A+B"},
                        operands={"A": a, "B": b}, is_lazy=True)
 
-    def pow(self, other, out=None): return binary_op("pow", self, other, ret=out)
-    def matmul(self, other): return matmul_op(self, other)
-    def eq(self, other): return binary_op("eq", self, other)
-    def ge(self, other): return binary_op("ge", self, other)
-    def gt(self, other): return binary_op("gt", self, other)
-    def drelu(self, other): return binary_op("drelu", self, other)  # TODO
+    def sub(self, other, out=None):
+        if not LAZY: return binary_op("sub", self, other, ret=out)
+        a, b = Array.broadcast(self, other)
+        a.outdegree += 1; b.outdegree += 1
+        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A-B"},
+                       operands={"A": a, "B": b}, is_lazy=True)
+    def div(self, other, out=None):
+        if not LAZY: return binary_op("div", self, other, ret=out)
+        a, b = Array.broadcast(self, other)
+        a.outdegree += 1; b.outdegree += 1
+        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A/B"},
+                       operands={"A": a, "B": b}, is_lazy=True)
+    def mul(self, other, out=None):
+        if not LAZY: return binary_op("mul", self, other, ret=out)
+        a, b = Array.broadcast(self, other)
+        a.outdegree += 1; b.outdegree += 1
+        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A*B"},
+                       operands={"A": a, "B": b}, is_lazy=True)
+    def pow(self, other, out=None):
+        if not LAZY:
+            return binary_op("pow", self, other, ret=out)
+        a, b = Array.broadcast(self, other)
+        a.outdegree += 1; b.outdegree += 1
+        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "pow(A,B)"},
+                       operands={"A": a, "B": b}, is_lazy=True)
+
+    def matmul(self, other):
+        if not LAZY: return matmul_op(self, other)
+        a, b = self, other
+        if a.ndim == 1: a = a.reshape((1, *a.shape))
+        if b.ndim == 1: b = b.reshape((*b.shape, 1))
+        ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
+        a.outdegree += 1
+        b.outdegree += 1
+        return ClArray(shape=ret_shape, dtype=a.dtype, operator={"type": "matmul"},
+                       operands={"A": a, "B": b}, is_lazy=True)
+
+    def eq(self, other):
+        if not LAZY: return binary_op("eq", self, other)
+        a, b = Array.broadcast(self, other)
+        a.outdegree += 1; b.outdegree += 1
+        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "(float)isequal(A,B)"},
+                       operands={"A": a, "B": b}, is_lazy=True)
+
+    def ge(self, other):
+        if not LAZY: return binary_op("ge", self, other)
+        a, b = Array.broadcast(self, other)
+        a.outdegree += 1; b.outdegree += 1
+        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "(float)isgreaterequal(A,B)"},
+                       operands={"A": a, "B": b}, is_lazy=True)
+    def gt(self, other):
+        if not LAZY: return binary_op("gt", self, other)
+        a, b = Array.broadcast(self, other)
+        a.outdegree += 1; b.outdegree += 1
+        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "(float)isgreater(A,B)"},
+                       operands={"A": a, "B": b}, is_lazy=True)
+
+    def drelu(self, other):
+        if not LAZY: return binary_op("drelu", self, other)
+        a, b = Array.broadcast(self, other)
+        a.outdegree += 1; b.outdegree += 1
+        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "B>0?A:0.0f"},
+                       operands={"A": a, "B": b}, is_lazy=True)
 
     # ##### Reduce Ops #####
-    def sum(self, axis=None, keepdims=None): return reduce_op("sum", self, axis=axis, keepdims=keepdims)
-    def max(self, axis=None, keepdims=False): return reduce_op("max", self, axis=axis, keepdims=keepdims)
+    def sum(self, axis=None, keepdims=None):
+        if not self.is_lazy:
+            return reduce_op("sum", self, axis=axis, keepdims=keepdims)
+        operator = {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}}
+        ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
+        if keepdims: ret_shape.insert(axis, 1)
+        self.outdegree += 1
+        return ClArray(shape=ret_shape, dtype=self.dtype, operator=operator,
+                       operands={"A": self}, is_lazy=True)
+
+    def max(self, axis=None, keepdims=False):
+        if not self.is_lazy:
+            return reduce_op("max", self, axis=axis, keepdims=keepdims)
+        operator = {"type": "reduce", "code": "max", "args": {"axis": axis, "keepdims": keepdims}}
+        ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
+        if keepdims: ret_shape.insert(axis, 1)
+        self.outdegree += 1
+        return ClArray(shape=ret_shape, dtype=self.dtype, operator=operator,
+                       operands={"A": self}, is_lazy=True)
 
     # ##### Slice Ops #####
     def __getitem__(self, key):
@@ -402,8 +520,9 @@ class ClArray(Array):
             inst = self.contiguous().reshape(shape)
         return inst
 
-    def expand(self, shape):
-        inst = copy.copy(self)
+    def expand(self, shape, inplace=False):
+        # inplace=True return self with modified meta info
+        inst = self if inplace else copy.copy(self)
         assert len(shape) == inst.ndim
         strides = []
         for i, (s1, s2) in enumerate(zip(inst.shape, shape)):
@@ -455,11 +574,13 @@ class ClArray(Array):
         return cls(data=buffer, shape=shape, dtype=dtype)
 
     def numpy(self):
-        data = np.empty(self.shape, dtype=self.dtype)
-        cl.enqueue("copy", data, self.contiguous().buffer, is_blocking=True)
+        arr = self.resolve() if self.is_lazy else self
+        data = np.empty(arr.shape, dtype=arr.dtype)
+        cl.enqueue("copy", data, arr.contiguous().buffer, is_blocking=True)
         return data
 
     def contiguous(self):
+        assert not self.is_lazy, "LazyArray should be resolve first."
         return contiguous_op(self)
 
     def __update_contiguousness(self):
@@ -467,4 +588,13 @@ class ClArray(Array):
         sorted_strides = sorted(strides)
         self.f_contiguous = sorted_strides == strides
         self.c_contiguous = sorted_strides[::-1] == strides
+
+    def transport(self, other):
+        # transport buffer and meta info from other to self
+        self.buffer = other.buffer
+        self.shape = other.shape
+        self.strides = other.strides
+        self.c_contiguous, self.f_contiguous = other.c_contiguous, other.f_contiguous
+        self.offset = other.offset
+        return self
 

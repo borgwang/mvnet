@@ -8,8 +8,9 @@ mvnet is a small but fully functional deep learning framework built on top of [t
 
 ### jit
 - [x] rename variable in the experssion
+- rules of node merge
+  - [x] merge inplace ops
 - [] support unary ops
-- [] rules of node merge
 - [] backward?
 
 ### TODOs

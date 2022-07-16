@@ -1,7 +1,6 @@
 from core.dtype import float32
 
 class Array:
-
     def __init__(self, shape=None, dtype=float32, is_lazy=False):
         self.is_lazy = is_lazy
         self.shape, self.dtype = shape, dtype
@@ -43,11 +42,11 @@ class Array:
             a = a.reshape([1] * (ndim - a.ndim) + list(a.shape))
         if b.ndim != ndim:
             b = b.reshape([1] * (ndim - b.ndim) + list(b.shape))
-        broadcast_shape = [max(i, j) for i, j in zip(a.shape, b.shape)]
+        broadcast_shape = tuple([max(i, j) for i, j in zip(a.shape, b.shape)])
         if a.shape != broadcast_shape:
-            a = a.expand(broadcast_shape)
+            a = a.expand(broadcast_shape, inplace=True)
         if b.shape != broadcast_shape:
-            b = b.expand(broadcast_shape)
+            b = b.expand(broadcast_shape, inplace=True)
         return a, b
 
     @classmethod
