@@ -12,6 +12,7 @@ class Array:
             clsname = "Lazy" + clsname
         return (f"<{clsname} dtype={self.dtype} shape={self.shape} "
                 f"strides={self.strides}>")
+
     @property
     def size(self):
         raise NotImplementedError
@@ -22,6 +23,7 @@ class Array:
 
     @classmethod
     def asarray(cls, obj):
+        from core.backend.opencl import ClArray
         if not isinstance(obj, cls):
             obj = cls(obj.numpy()) if issubclass(obj.__class__, Array) else cls(obj)
         return obj
@@ -44,9 +46,9 @@ class Array:
             b = b.reshape([1] * (ndim - b.ndim) + list(b.shape))
         broadcast_shape = tuple([max(i, j) for i, j in zip(a.shape, b.shape)])
         if a.shape != broadcast_shape:
-            a = a.expand(broadcast_shape, inplace=True)
+            a = a.expand(broadcast_shape)
         if b.shape != broadcast_shape:
-            b = b.expand(broadcast_shape, inplace=True)
+            b = b.expand(broadcast_shape)
         return a, b
 
     @classmethod

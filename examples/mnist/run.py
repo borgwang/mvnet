@@ -19,7 +19,7 @@ from core.tensor import Tensor
 from utils.data_iterator import BatchIterator
 from utils.downloader import download_url
 from utils.evaluator import AccEvaluator
-from utils.helper import plot_graph
+from utils.helper import get_tensor_graph
 from env import DEBUG, GRAPH
 
 def get_one_hot(targets, nb_classes):
@@ -73,11 +73,8 @@ def main(args):
             x, y = batch.inputs.to(args.device), batch.targets.to(args.device)
             pred = net.forward(x)
             loss = loss_fn(pred, y)
-            if GRAPH: ts = time.monotonic()
             loss.backward()
-            if GRAPH: plot_graph(loss)
             import pdb; pdb.set_trace()
-            if GRAPH: print("loss.backward() cost: ", time.monotonic() - ts)
             optim.step()
             if args.onepass: sys.exit()
         print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))

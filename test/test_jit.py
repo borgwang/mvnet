@@ -4,7 +4,7 @@ import numpy as np
 
 from env import LAZY, GRAPH
 from core.tensor import Tensor
-from utils.helper import plot_graph, kernelstat
+from utils.helper import get_tensor_graph, get_array_graph, kernelstat
 
 def check_tensor(a, b, atol=0, rtol=1e-4):
     assert a.shape == b.shape
@@ -14,11 +14,11 @@ def test_lazy_unary():
     npa = np.array([[1, 2, 3]]).astype(np.float32)
     a = Tensor(npa, name="a").to("gpu")
     if LAZY:
-        check_tensor((-a).resolve(), -npa)
-        check_tensor(a.log().resolve(), np.log(npa))
-        check_tensor(a.exp().resolve(), np.exp(npa))
-        check_tensor(a.relu().resolve(), npa*(npa>0))
-        #check_tensor((a>0).resolve(), (npa>0).astype(np.float32))
+        check_tensor(-a, -npa)
+        check_tensor(a.log(), np.log(npa))
+        check_tensor(a.exp(), np.exp(npa))
+        check_tensor(a.relu(), npa*(npa>0))
+        check_tensor((a>0), (npa>0).astype(np.float32))
 
 def test_lazy_binary():
     np_w = np.array([[1, 2, 3]]).astype(np.float32)
@@ -67,33 +67,52 @@ def test_lazy_forward():
     y = Tensor(y_np, name="y").to(device)
     w = Tensor(w_np, requires_grad=True, name="w").to(device)
     b = Tensor(b_np, requires_grad=True, name="b").to(device)
-
-    w.zero_grad()
-    b.zero_grad()
+    w.zero_grad(); b.zero_grad()
 
     kernelstat.reset()
     pred_tmp = x @ w + b
     pred = pred_tmp / pred_tmp.sum()
-    #if GRAPH: plot_graph(pred)
-    assert kernelstat.total() == 0  # not invoke yet
+    loss = ((pred - y)**2).log().exp().sum()
 
-    # patial run
-    kernelstat.reset()
     pred_tmp_np = x_np @ w_np + b_np
-    check_tensor(pred_tmp, pred_tmp_np, rtol=1e-3)
-    assert kernelstat.get("matmul") == 1
-    assert kernelstat.get("reduce") == 0
-    assert kernelstat.total() == 2 + 1
+    pred_np = pred_tmp_np / pred_tmp_np.sum()
+    loss_np = np.sum(np.exp(np.log((pred_np - y_np)** 2)))
+
+    if LAZY:
+        assert kernelstat.total() == 0  # not invoke yet, it' lazy
 
     kernelstat.reset()
-    pred_np = x_np @ w_np + b_np
-    pred_np = pred_np / pred_np.sum()
+    check_tensor(pred_tmp, pred_tmp_np, rtol=1e-3)
+    if LAZY:
+        assert kernelstat.get("matmul") == 1
+        assert kernelstat.get("elementwise") == 1
+
+    kernelstat.reset()
     check_tensor(pred, pred_np, rtol=1e-3)
-    assert kernelstat.get("matmul") == 1
-    assert kernelstat.total() == 6
+    if LAZY:
+        # matmul has been invoked before
+        assert kernelstat.get("matmul") == 0
+        assert kernelstat.get("elementwise") == 1
+
+    kernelstat.reset()
+    check_tensor(loss, loss_np, rtol=1e-3)
+    if LAZY:
+        assert kernelstat.get("matmul") == 0
+        assert kernelstat.get("elementwise") == 1
+
+    kernelstat.reset()
+    check_tensor(loss, loss_np, rtol=1e-3)
+    if LAZY:
+        # loss has been invoked before
+        assert kernelstat.get("matmul") == 0
+        assert kernelstat.get("elementwise") == 0
+        assert kernelstat.get("reeduce") == 0
+        assert kernelstat.get("contiguous") == 1
+
+    if GRAPH == 2:
+        get_array_graph(loss.array)
 
 def test_lazy_backward():
-    kernelstat.reset()
     BS = 64
     idim = 2569
     odim = 10
@@ -107,16 +126,15 @@ def test_lazy_backward():
     y = Tensor(y_np, name="y").to(device)
     w = Tensor(w_np, requires_grad=True, name="w").to(device)
     b = Tensor(b_np, requires_grad=True, name="b").to(device)
+    w.zero_grad(); b.zero_grad()
 
-    w.zero_grad()
-    b.zero_grad()
     pred = x @ w + b
-    loss = ((pred - y)**2).sum()
-    if GRAPH: plot_graph(loss)
-    loss_np = (((x_np @ w_np + b_np) - y_np) ** 2).sum()
-    check_tensor(loss, loss_np, rtol=1e-3)
-    print(kernelstat.counter)
-    #loss.backward()
+    cost = (pred - y) ** 2
+    loss = cost.sum()
+    #loss_np = (((x_np @ w_np + b_np) - y_np) ** 2).sum()
+    #check_tensor(loss, loss_np, rtol=1e-3)
+    loss.backward()
+    #if GRAPH == 2: get_array_graph(loss.array)
+    if GRAPH == 2: get_array_graph(w.grad)
     #w -= 0.0001 * w.grad
     #b -= 0.0001 * b.grad
-

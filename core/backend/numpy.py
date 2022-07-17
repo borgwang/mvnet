@@ -9,6 +9,7 @@ class NpArray(Array):
         super().__init__(shape, dtype)
         self.data = np.asarray(data)
         self.shape = self.data.shape
+        self.strides = tuple(s // dtype().itemsize for s in self.data.strides)
 
     @property
     def size(self): return self.data.nbytes

@@ -10,12 +10,6 @@ if BACKEND == "opencl":
 elif BACKEND == "cuda":
     from core.backend.cuda import CuArray as GPUArray
 
-
-def as_tensor(obj):
-    if not isinstance(obj, Tensor):
-        obj = Tensor(obj)
-    return obj
-
 class Tensor:
     def __init__(self, values, requires_grad=False, dependency=(), dtype=float32, name=None):
         self._gpu = isinstance(values, GPUArray)
@@ -76,52 +70,52 @@ class Tensor:
                 f"gpu={self._gpu}, array={self.array.__class__.__name__})")
 
     def __gt__(self, other):
-        return ops.gt(self, as_tensor(other))
+        return ops.gt(self, self.__astensor(other))
 
     def __eq__(self, other):
-        return ops.eq(self, as_tensor(other))
+        return ops.eq(self, self.__astensor(other))
 
     def __ge__(self, other):
-        return ops.ge(self, as_tensor(other))
+        return ops.ge(self, self.__astensor(other))
 
     def __add__(self, other):
-        return ops.add(self, as_tensor(other))
+        return ops.add(self, self.__astensor(other))
 
     def __radd__(self, other):
-        return ops.add(as_tensor(other), self)
+        return ops.add(self.__astensor(other), self)
 
     def __iadd__(self, other):
-        self.values += as_tensor(other).values
+        self.values += self.__astensor(other).values
         return self
 
     def __sub__(self, other):
-        return ops.sub(self, as_tensor(other))
+        return ops.sub(self, self.__astensor(other))
 
     def __rsub__(self, other):
-        return ops.sub(as_tensor(other), self)
+        return ops.sub(self.__astensor(other), self)
 
     def __isub__(self, other):
-        self.array = self.array - as_tensor(other).values
+        self.array = self.array - self.__astensor(other).values
         return self
 
     def __mul__(self, other):
-        return ops.mul(self, as_tensor(other))
+        return ops.mul(self, self.__astensor(other))
 
     def __rmul__(self, other):
-        return ops.mul(as_tensor(other), self)
+        return ops.mul(self.__astensor(other), self)
 
     def __imul__(self, other):
-        self.values *= as_tensor(other).values
+        self.values *= self.__astensor(other).values
         return self
 
     def __truediv__(self, other):
-        return ops.div(self, as_tensor(other))
+        return ops.div(self, self.__astensor(other))
 
     def __rtruediv__(self, other):
-        return ops.div(as_tensor(other), self)
+        return ops.div(self.__astensor(other), self)
 
     def __itruediv__(self, other):
-        self.values = self.values / as_tensor(other).values
+        self.values = self.values / self.__astensor(other).values
         return self
 
     def __neg__(self):
@@ -131,23 +125,23 @@ class Tensor:
         return ops.getitem(self, key)
 
     def __pow__(self, other):
-        return ops.pow(self, as_tensor(other))
+        return ops.pow(self, self.__astensor(other))
 
     def __rpow__(self, other):
-        return ops.pow(as_tensor(other), self)
+        return ops.pow(self.__astensor(other), self)
 
     def __ipow__(self, other):
-        self.values = self.values ** as_tensor(other).values
+        self.values = self.values ** self.__astensor(other).values
         return self
 
     def __matmul__(self, other):
-        return ops.matmul(self, as_tensor(other))
+        return ops.matmul(self, self.__astensor(other))
 
     def __rmatmul__(self, other):
-        return ops.matmul(as_tensor(other), self)
+        return ops.matmul(self.__astensor(other), self)
 
     def __imatmul__(self, other):
-        self.values = self.values @ as_tensor(other).values
+        self.values = self.values @ self.__astensor(other).values
         return self
 
     def __len__(self):
@@ -214,6 +208,9 @@ class Tensor:
     def zero_grad(self):
         self.grad = None
 
-    def resolve(self):
-        assert LAZY and self.array.is_lazy
-        return self.array.resolve()
+    def __astensor(self, obj):
+        if not isinstance(obj, self.__class__):
+            array = self.array.__class__(obj, dtype=self.dtype)
+            obj = Tensor(array)
+        return obj
+

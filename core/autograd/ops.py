@@ -11,6 +11,7 @@ def unary_ops(func):
         dependency = []
         if ts.requires_grad and grad_fn:
             if GRAPH: grad_fn=timer(grad_fn)
+            grad_fn.__name__ = f"grad_fn for {func.__name__}"
             dependency.append(dict(tensor=ts, grad_fn=grad_fn))
             ts.outdegree += 1
         name = genname(func.__name__, ts)
@@ -41,10 +42,12 @@ def binary_ops(func):
         dependency = []
         if ts1.requires_grad and grad_fn1:
             if GRAPH: grad_fn1=timer(grad_fn1)
+            grad_fn1.__name__ = f"grad_fn1 for {func.__name__}"
             dependency.append(dict(tensor=ts1, grad_fn=grad_fn1))
             ts1.outdegree += 1
         if ts2.requires_grad and grad_fn2:
             if GRAPH: grad_fn2=timer(grad_fn2)
+            grad_fn2.__name__ = f"grad_fn2 for {func.__name__}"
             dependency.append(dict(tensor=ts2, grad_fn=grad_fn2))
             ts2.outdegree += 1
         name = genname(func.__name__, ts1, ts2)
@@ -80,6 +83,16 @@ def div(arr1, arr2):
 def pow(arr1, arr2):
     res = arr1 ** arr2
     grad_fn1 = lambda g: g * (arr2 * arr1**(arr2 - 1.0))
+    """
+    def grad_fn1(g):
+        t = arr2 - 1.0  # nparray
+        print("###", t)
+        t = arr1**t  # lazy_clarry
+        print("###", t)
+        t = arr2 * arr1**t  # nparray.asarray, which will invoke the lazyarry
+        print("###", t)
+        return g*t
+    """
     grad_fn2 = lambda g: g * (res * arr1.log())
     return res, grad_fn1, grad_fn2
 
@@ -107,7 +120,7 @@ def sum(arr, axis=None, keepdims=False):
     def grad_fn(g):
         shape = arr.shape
         if axis is None:
-            assert not keepdims, "Invalid keepdims when axis is None"
+            assert not keepdims, "keepdims must be False when axis is None"
             return g.reshape([1] * arr.ndim).expand(shape)
         if not keepdims:
             g = g.reshape((*shape[:axis], 1, *shape[axis+1:]))

@@ -25,7 +25,7 @@ class ClContext:
 
     @lru_cache(maxsize=None)
     def build(self, name, program):
-        if DEBUG > 1 and name != "contiguous_op": print(f"[DEBUG] program {name}: \n {program}")
+        if DEBUG > 1: print(f"[DEBUG] program {name}: \n {program}")
         kernel = pyopencl.Program(self.ctx, program).build().__getattr__(name)
         return lambda *args: kernel(self.queue, *args)
 
@@ -166,7 +166,7 @@ def matmul_op(a, b):
         ret = ret.squeeze(axis)
     return ret
 
-def contiguous_op(x, inplace=False):
+def contiguous_op(x):
     ret = x.__class__(shape=x.shape, dtype=x.dtype)
     x_ndim, x_shape, x_strides = x.ndim, x.shape, x.strides
     if not x_ndim:
@@ -186,13 +186,11 @@ def contiguous_op(x, inplace=False):
     args = [int32(s) for ss in zip(x_shape, x_strides) for s in ss]
     e = op((prod(x_shape),), None, *args, int32(x.offset), x.buffer, ret.buffer)
     kernelstat.log("contiguous")
-    if inplace:
-        ret = x.transport(ret)
     if GRAPH: e.wait()
     return ret
 
 def reduce_op(name, x, axis=None, keepdims=True):
-    x = contiguous_op(x, inplace=True) if not x.c_contiguous else x
+    x = contiguous_op(x) if not x.c_contiguous else x
     code_map = {"sum": "A+B", "max": "max(A,B)"}
     padval_map = {"sum": "0.0f", "max": "-INFINITY"}
     x_shp = x.shape
@@ -257,7 +255,6 @@ def reduce_op(name, x, axis=None, keepdims=True):
 
 class ClArray(Array):
     """Pyopencl's multidimension array class only implement limited functionality. So we write our own."""
-    #asd
     def __init__(self, data=None, shape=None, dtype=float32, is_lazy=False, **kwargs):
         super().__init__(shape, dtype, is_lazy)
         if is_lazy:
@@ -274,6 +271,8 @@ class ClArray(Array):
                 else:
                     assert self.shape is not None, "cannot infer shape when without data"
                 self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
+            self.operator = None
+            self.operands = {}
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(len(self.shape)))
         self.offset = 0  # offset relative to the beginning of the buffer
@@ -313,6 +312,7 @@ class ClArray(Array):
 
     @staticmethod
     def invoke(operator, operands):
+        raise ValueError
         # computate merged op
         if operator["type"] == "elementwise":
             return elementwise_op(operator["code"], operands, **operator.get("args", {}))
@@ -323,7 +323,7 @@ class ClArray(Array):
 
     def _resolve(self, i):
         if DEBUG: print(f"{3*' '*i}[resolve] i={i} _resolve [{str(id(self))[-4:]}] start")
-        # 返回前置节点尽可能合并后的操作以及操作数
+        # 返回前置节点合并后的操作以及操作数
         operator = copy.deepcopy(self.operator)
         operands = {}
         # for eager operands
@@ -344,23 +344,19 @@ class ClArray(Array):
             if operator["type"] != op["type"]:
                 if DEBUG: print(f"{3*' '*i}[resolve] {operator['type']} != {op['type']}. invoke compute {op}, operands={[(k, str(id(v))[-4:]) for k,v in opd.items()]}")
                 eager = self.invoke(op, opd)
-                arr.buffer = eager.buffer
+                arr.buffer, arr.is_lazy = eager.buffer, False
+                if DEBUG: print(f"@@@@@@ {str(id(self))[-4:]} update operands {str(id(arr))[-4:]}")
                 operands[name] = arr
             elif arr.outdegree > 1:
                 if DEBUG: print(f"{3*' '*i}[resolve] multi-branch operand {str(id(arr))[-4:]}. invoke compute {op}, operands={[(k, str(id(v))[-4:]) for k,v in opd.items()]}")
                 eager = self.invoke(op, opd)
                 arr.buffer, arr.is_lazy = eager.buffer, False
+                if DEBUG: print(f"@@@@@@ {str(id(self))[-4:]} update operands {str(id(arr))[-4:]}")
                 operands[name] = arr
             else:
                 if op["type"] == "elementwise":
-                    if arr.outdegree > 1:
-                        eager = self.invoke(op, opd)
-                        arr.buffer = eager.buffer
-                        arr.is_lazy = False
-                        operands[name] = arr
-                    else:
-                        operands.update(opd)
-                        operator["code"] = operator["code"].replace(name, f"({op['code']})")
+                    operands.update(opd)
+                    operator["code"] = operator["code"].replace(name, f"({op['code']})")
         if DEBUG: print(f"{3*' '*i}[resolve] i={i} _resolve [{str(id(self))[-4:]}] finish. operator={operator}, operands: {[(k, str(id(v))[-4:]) for k, v in operands.items()]}")
         return operator, operands
 
@@ -368,7 +364,9 @@ class ClArray(Array):
         varnamegetter.reset()
         operator, operands = self._resolve(0)
         if DEBUG: print(f"[resolve] final invoke compute {operator}, operands={[(k, str(id(v))[-4:]) for k,v in operands.items()]}")
-        return self.invoke(operator, operands)
+        self.buffer = self.invoke(operator, operands).buffer
+        self.is_lazy = False
+        return self
 
     # ##### Binary Ops #####
     def add(self, other, out=None):
@@ -410,8 +408,7 @@ class ClArray(Array):
         if a.ndim == 1: a = a.reshape((1, *a.shape))
         if b.ndim == 1: b = b.reshape((*b.shape, 1))
         ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
-        a.outdegree += 1
-        b.outdegree += 1
+        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=ret_shape, dtype=a.dtype, operator={"type": "matmul"},
                        operands={"A": a, "B": b}, is_lazy=True)
 
@@ -443,9 +440,8 @@ class ClArray(Array):
                        operands={"A": a, "B": b}, is_lazy=True)
 
     # ##### Reduce Ops #####
-    def sum(self, axis=None, keepdims=None):
-        if not self.is_lazy:
-            return reduce_op("sum", self, axis=axis, keepdims=keepdims)
+    def sum(self, axis=None, keepdims=False):
+        if not LAZY: return reduce_op("sum", self, axis=axis, keepdims=keepdims)
         operator = {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}}
         ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
@@ -454,8 +450,7 @@ class ClArray(Array):
                        operands={"A": self}, is_lazy=True)
 
     def max(self, axis=None, keepdims=False):
-        if not self.is_lazy:
-            return reduce_op("max", self, axis=axis, keepdims=keepdims)
+        if LAZY: return reduce_op("max", self, axis=axis, keepdims=keepdims)
         operator = {"type": "reduce", "code": "max", "args": {"axis": axis, "keepdims": keepdims}}
         ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
@@ -520,9 +515,8 @@ class ClArray(Array):
             inst = self.contiguous().reshape(shape)
         return inst
 
-    def expand(self, shape, inplace=False):
-        # inplace=True return self with modified meta info
-        inst = self if inplace else copy.copy(self)
+    def expand(self, shape):
+        inst = copy.copy(self)
         assert len(shape) == inst.ndim
         strides = []
         for i, (s1, s2) in enumerate(zip(inst.shape, shape)):
@@ -588,13 +582,4 @@ class ClArray(Array):
         sorted_strides = sorted(strides)
         self.f_contiguous = sorted_strides == strides
         self.c_contiguous = sorted_strides[::-1] == strides
-
-    def transport(self, other):
-        # transport buffer and meta info from other to self
-        self.buffer = other.buffer
-        self.shape = other.shape
-        self.strides = other.strides
-        self.c_contiguous, self.f_contiguous = other.c_contiguous, other.f_contiguous
-        self.offset = other.offset
-        return self
 
