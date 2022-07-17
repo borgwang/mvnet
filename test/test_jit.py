@@ -13,12 +13,11 @@ def check_tensor(a, b, atol=0, rtol=1e-4):
 def test_lazy_unary():
     npa = np.array([[1, 2, 3]]).astype(np.float32)
     a = Tensor(npa, name="a").to("gpu")
-    if LAZY:
-        check_tensor(-a, -npa)
-        check_tensor(a.log(), np.log(npa))
-        check_tensor(a.exp(), np.exp(npa))
-        check_tensor(a.relu(), npa*(npa>0))
-        check_tensor((a>0), (npa>0).astype(np.float32))
+    check_tensor(-a, -npa)
+    check_tensor(a.log(), np.log(npa))
+    check_tensor(a.exp(), np.exp(npa))
+    check_tensor(a.relu(), npa*(npa>0))
+    check_tensor((a>0), (npa>0).astype(np.float32))
 
 def test_lazy_binary():
     np_w = np.array([[1, 2, 3]]).astype(np.float32)

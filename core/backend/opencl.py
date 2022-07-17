@@ -8,7 +8,7 @@ from env import DEBUG, GRAPH, LAZY
 from core.backend.base import Array
 from core.dtype import int32, float32
 from utils.math import prod
-from utils.helper import varnamegetter, kernelstat
+from utils.helper import varnamegetter, kernelstat, graphoptimizer
 
 
 class ClContext:
@@ -312,8 +312,7 @@ class ClArray(Array):
 
     @staticmethod
     def invoke(operator, operands):
-        raise ValueError
-        # computate merged op
+        # invoke the actual computation
         if operator["type"] == "elementwise":
             return elementwise_op(operator["code"], operands, **operator.get("args", {}))
         elif operator["type"] == "reduce":
@@ -322,9 +321,10 @@ class ClArray(Array):
             return matmul_op(operands["A"], operands["B"], **operator.get("args", {}))
 
     def _resolve(self, i):
+        """graph optimization"""
         if DEBUG: print(f"{3*' '*i}[resolve] i={i} _resolve [{str(id(self))[-4:]}] start")
         # 返回前置节点合并后的操作以及操作数
-        operator = copy.deepcopy(self.operator)
+        operator = self.operator
         operands = {}
         # for eager operands
         for name, arr in self.operands.items():
@@ -450,7 +450,7 @@ class ClArray(Array):
                        operands={"A": self}, is_lazy=True)
 
     def max(self, axis=None, keepdims=False):
-        if LAZY: return reduce_op("max", self, axis=axis, keepdims=keepdims)
+        if not LAZY: return reduce_op("max", self, axis=axis, keepdims=keepdims)
         operator = {"type": "reduce", "code": "max", "args": {"axis": axis, "keepdims": keepdims}}
         ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)

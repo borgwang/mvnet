@@ -20,7 +20,7 @@ from utils.data_iterator import BatchIterator
 from utils.downloader import download_url
 from utils.evaluator import AccEvaluator
 from utils.helper import get_tensor_graph
-from env import DEBUG, GRAPH
+from env import DEBUG, GRAPH, LAZY
 
 def get_one_hot(targets, nb_classes):
     return np.eye(nb_classes)[np.array(targets).reshape(-1)]
@@ -37,6 +37,7 @@ def prepare_dataset(data_dir):
     with gzip.open(save_path, "rb") as f:
         return pickle.load(f, encoding="latin1")
 
+@profile
 def main(args):
     if args.seed >= 0:
         np.random.seed(args.seed)
@@ -73,9 +74,10 @@ def main(args):
             x, y = batch.inputs.to(args.device), batch.targets.to(args.device)
             pred = net.forward(x)
             loss = loss_fn(pred, y)
-            loss.backward()
-            import pdb; pdb.set_trace()
-            optim.step()
+            if LAZY: loss.array.resolve()
+            #loss.numpy()
+            #loss.backward()
+            #optim.step()
             if args.onepass: sys.exit()
         print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))
         if args.eval:
@@ -83,6 +85,10 @@ def main(args):
             test_pred_idx = np.argmax(test_pred, axis=1)
             test_y_idx = test_y.numpy()
             print(evaluator.evaluate(test_pred_idx, test_y_idx))
+
+    from utils.helper import kernelstat
+    print(dict(kernelstat.counter))
+    print("total kernel call: ", kernelstat.total())
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

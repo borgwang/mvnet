@@ -83,16 +83,6 @@ def div(arr1, arr2):
 def pow(arr1, arr2):
     res = arr1 ** arr2
     grad_fn1 = lambda g: g * (arr2 * arr1**(arr2 - 1.0))
-    """
-    def grad_fn1(g):
-        t = arr2 - 1.0  # nparray
-        print("###", t)
-        t = arr1**t  # lazy_clarry
-        print("###", t)
-        t = arr2 * arr1**t  # nparray.asarray, which will invoke the lazyarry
-        print("###", t)
-        return g*t
-    """
     grad_fn2 = lambda g: g * (res * arr1.log())
     return res, grad_fn1, grad_fn2
 

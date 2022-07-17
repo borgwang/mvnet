@@ -108,3 +108,30 @@ class KernelStat:
 
 kernelstat = KernelStat()
 
+class GraphOptimizer:
+    def __init__(self):
+        pass
+
+    def build(self, node):
+        operator = node.operator
+        for name, subnode in node.operands.items():
+
+            pass
+
+    def __combine_elementwise(self):
+        pass
+
+    def __simplify_arithmetic(self):
+        pass
+
+    def __operation_fusion(self):
+        pass
+
+    def optimize(self):
+        pass
+
+    def visualize(self):
+        pass
+
+
+graphoptimizer = GraphOptimizer()
