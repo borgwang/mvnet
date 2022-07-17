@@ -20,10 +20,8 @@ def genname(prefix, *args):
 class VarNameGetter:
     def __init__(self):
         letters = tuple(string.ascii_lowercase)
-        candidates = itertools.product(letters, letters, letters)
+        candidates = itertools.product(*([letters]*4))  # 26^4
         self.candidates = tuple("".join(s) for s in candidates)
-
-        self.candidates = letters
         self.reset()
 
     def get(self):

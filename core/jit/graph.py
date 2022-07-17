@@ -6,15 +6,14 @@ from utils.helper import varnamegetter
 
 class GraphOptimizer:
     def __init__(self, target_node):
+        assert target_node.is_lazy
         self.target_node = target_node
         varnamegetter.reset()
 
     def build(self, node=None):
-        # recursive build the graph
         if node is None: node = self.target_node
-        operator = node.operator
-        for name, dep_node in node.operands.items():
-            dep_node.outdegree += 1
+        for name, dep_node in node.lazy_info["operands"].items():
+            dep_node.node_info["outdegree"] += 1
             self.build(dep_node)
         return self
 
@@ -24,27 +23,27 @@ class GraphOptimizer:
         It has three element-wise kernel ops, i.e. add, mul and exp. We can merge that into a single kernel call, i.e. exp((b+c)*e).
         """
         operands = {}
-        operator = node.operator
-        for var_name, dep_node in node.operands.items():
+        operator = node.lazy_info["operator"]
+        for var_name, dep_node in node.lazy_info["operands"].items():
             if not dep_node.is_lazy:
                 new_var_name = varnamegetter.get()
                 operands[new_var_name] = dep_node
                 if "code" in operator:
                     operator["code"] = operator["code"].replace(var_name, new_var_name)
             else:
-                if not dep_node.is_visited: self._merge_elementwise(dep_node)
-                if operator["type"] == "elementwise" and dep_node.operator["type"] == "elementwise" and dep_node.outdegree == 1:
-                    operands.update(dep_node.operands)
-                    var_expr = f"({dep_node.operator['code']})"
+                if not dep_node.lazy_info["is_visited"]: self._merge_elementwise(dep_node)
+                if operator["type"] == "elementwise" and dep_node.lazy_info["operator"]["type"] == "elementwise" and \
+                        dep_node.node_info["outdegree"] == 1:
+                    operands.update(dep_node.lazy_info["operands"])
+                    var_expr = f"({dep_node.lazy_info['operator']['code']})"
                     operator["code"] = operator["code"].replace(var_name, var_expr)
                 else:
                     new_var_name = varnamegetter.get()
                     operands[new_var_name] = dep_node
                     if "code" in operator:
                         operator["code"] = operator["code"].replace(var_name, new_var_name)
-        print(f"node {id(node)} resolve finished operator={operator}, operrands={operands}")
-        node.is_visited = True
-        node.operator, node.operands = operator, operands
+        node.node_info["is_visited"] = True
+        node.lazy_info["operator"], node.lazy_info["operands"] = operator, operands
 
     def _simplify_arithmetic(self):
         pass
@@ -64,17 +63,17 @@ class GraphOptimizer:
         def build_nx_graph(node, G):
             if node is None: return G
             nid = id(node)
-            operator = node.operator
+            operator = node.lazy_info["operator"]
             if nid in G.nodes: return G
             G.add_node(nid)
-            G.nodes[nid]["label"] = f"{node.shape}\nin={node.indegree},out={node.outdegree}\n{nid}\nis_lazy={node.is_lazy}"
+            G.nodes[nid]["label"] = f"{node.shape}\n,child={node.node_info['outdegree']}\n{nid}\nis_lazy={node.is_lazy}"
             lazy = True
             if node.is_lazy:
                 G.nodes[nid]["fillcolor"] = color_map[operator["type"]]
             else:
                 G.nodes[nid]["fillcolor"] = "#ffffff"; lazy = False
             G.nodes[nid]["style"] = "filled, dashed" if not lazy else "filled"
-            for name, subnode in node.operands.items():
+            for name, subnode in node.lazy_info["operands"].items():
                 G = build_nx_graph(subnode, G)
                 edge = (id(subnode), nid)
                 if edge not in G.edges:

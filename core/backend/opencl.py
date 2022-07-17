@@ -44,25 +44,6 @@ class ClContext:
 
 cl = ClContext()
 
-def unary_op(name, a, ret=None, **kwargs):
-    if ret is None:
-        ret = a.__class__(shape=a.shape, dtype=a.dtype)  # TODO
-    assert ret.c_contiguous, f"ret must be contiguous. {ret}"
-    code_map = {"noop": "A", "neg": "-A", "log": "log(A)", "exp": "exp(A)", "relu": "max(A, 0.0f)", "sign": "sign(A)"}
-    op = cl.build("unary_op", f"""__kernel void unary_op(
-        {''.join([f'int a_s{i}, int res_s{i}, ' for i in range(a.ndim)])}
-        int a_ofst, __global const float *inp, __global float *ret) {{
-      int a_i=0, idx=0, gl_id=get_global_id(0); int ptr=gl_id;
-      {''.join([f'idx=ptr/res_s{i}; ptr%=res_s{i}; a_i+=idx*a_s{i};' for i in range(a.ndim)])}
-      float A=inp[a_i+a_ofst];
-      ret[gl_id]={code_map[name]};
-    }}""")
-    args = [int32(s) for ss in zip(a.strides, ret.strides) for s in ss] + [int32(a.offset)]
-    e = op((prod(a.shape),), None, *args, a.buffer, ret.buffer)
-    kernelstat.log("unary")
-    if GRAPH: e.wait()
-    return ret
-
 def elementwise_op(code, inp):
     assert len(set([tuple(x.shape) for x in inp.values()])) == 1, \
         f"Invalid input shape for elementwise op {inp}"
@@ -88,30 +69,6 @@ def elementwise_op(code, inp):
     args += [x.buffer for x in inp.values()]
     e = op((prod(a.shape),), None, *args, ret.buffer)
     kernelstat.log("elementwise")
-    if GRAPH: e.wait()
-    return ret
-
-def binary_op(name, a, b, ret=None):
-    a, b = Array.broadcast(a, b)
-    if ret is None:
-        ret = a.__class__(shape=a.shape, dtype=a.dtype)
-    assert ret.c_contiguous, f"ret must be contiguous. {ret}"
-    ret_strides = (1,) if not ret.strides else ret.strides
-    code_map = {"add": "A+B", "sub": "A-B", "div": "A/B", "mul": "A*B", "pow": "pow(A,B)",
-                "eq": "(float)isequal(A,B)", "gt": "(float)isgreater(A,B)", "ge": "(float)isgreaterequal(A,B)",
-                "drelu": "B>0?A:0.0f"}
-    op = cl.build("binary_op", f"""__kernel void binary_op(
-        {''.join([f'int a_s{i}, int b_s{i}, int res_s{i}, ' for i in range(a.ndim)])}
-        int a_ofst, int b_ofst, __global const float *inp_1, __global const float *inp_2, __global float *ret) {{
-      int a_i=0, b_i=0, idx=0, gl_id=get_global_id(0); int ptr=gl_id;
-      {''.join(f'idx=ptr/res_s{i}; ptr%=res_s{i}; a_i+=idx*a_s{i}; b_i+=idx*b_s{i};' for i in range(a.ndim))}
-      float A=inp_1[a_i+a_ofst], B=inp_2[b_i+b_ofst];
-      ret[gl_id] = {code_map[name]};
-    }}""")
-    args = [int32(s) for ss in zip(a.strides, b.strides, ret_strides) for s in ss]
-    args += [int32(s) for s in [a.offset, b.offset]]
-    e = op((prod(a.shape),), None, *args, a.buffer, b.buffer, ret.buffer)
-    kernelstat.log("binary")
     if GRAPH: e.wait()
     return ret
 
@@ -255,15 +212,11 @@ def reduce_op(name, x, axis=None, keepdims=True):
 
 class ClArray(Array):
     """Pyopencl's multidimension array class only implement limited functionality. So we write our own."""
-    def __init__(self, data=None, shape=None, dtype=float32, is_lazy=False, **kwargs):
-        super().__init__(shape, dtype, is_lazy)
-        if is_lazy:
-            # graph related attributes
-            self.operator = kwargs["operator"]
-            self.operands = kwargs["operands"]
-            self.indegree, self.outdegree = len(self.operands), 0
-            self.is_visited = False
-        else:
+    def __init__(self, data=None, shape=None, dtype=float32, lazy_info=None):
+        super().__init__(shape, dtype, lazy_info)
+        self.lazy_info = {"operator": None, "operands": {}} if lazy_info is None else lazy_info
+        self.node_info = {"outdegree": 0}
+        if not self.is_lazy:
             if isinstance(data, pyopencl.Buffer):
                 self.buffer = data
                 assert self.shape is not None, "cannot infer shape when initialize using clbuffer"
@@ -274,16 +227,19 @@ class ClArray(Array):
                 else:
                     assert self.shape is not None, "cannot infer shape when without data"
                 self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
-            # graph related attributes
-            self.indegree, self.outdegree = 0, 0
-            self.operator = None
-            self.operands = {}
-            self.is_visited = False
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(len(self.shape)))
         self.offset = 0  # offset relative to the beginning of the buffer
         self.c_contiguous, self.f_contiguous = True, False
         self.__update_contiguousness()
+
+    @property
+    def is_lazy(self):
+        return self.lazy_info.get("is_lazy", False)
+
+    @is_lazy.setter
+    def is_lazy(self, val):
+        self.lazy_info["is_lazy"] = val
 
     @property
     def size(self):
@@ -295,21 +251,38 @@ class ClArray(Array):
 
     # ##### Unary Ops #####
     def neg(self):
-        if not LAZY: return unary_op("neg", self)
-        return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "-A"},
-                       operands={"A": self}, is_lazy=True)
+        if not LAZY: return elementwise_op("-A", {"A": self})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "-A"},
+                     "operands": {"A": self},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
     def exp(self):
-        if not LAZY: return unary_op("exp", self)
-        return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "exp(A)"},
-                       operands={"A": self}, is_lazy=True)
+        if not LAZY: return elementwise_op("exp(A)", {"A": self})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "exp(A)"},
+                     "operands": {"A": self},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
+
     def log(self):
-        if not LAZY: return unary_op("log", self)
-        return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "log(A)"},
-                       operands={"A": self}, is_lazy=True)
+        if not LAZY: return elementwise_op("log(A)", {"A": self})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "log(A)"},
+                     "operands": {"A": self},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
     def relu(self):
-        if not LAZY: return unary_op("relu", self)
-        return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "max(A,0.0f)"},
-                       operands={"A": self}, is_lazy=True)
+        if not LAZY: return elementwise_op("max(A,0.0f)", {"A": self})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "max(A,0.0f)"},
+                     "operands": {"A": self},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
 
     @staticmethod
     def invoke(operator, operands):
@@ -324,11 +297,12 @@ class ClArray(Array):
     def resolve(self):
         def _resolve(node=None):
             if node is None: node = self
-            for name, dep_node in node.operands.items():
+            info = node.lazy_info
+            for name, dep_node in info["operands"].items():
                 if dep_node.is_lazy:
                     dep_node.buffer = _resolve(dep_node).buffer
                     dep_node.is_lazy = False
-            return self.invoke(node.operator, node.operands)
+            return self.invoke(info["operator"], info["operands"])
         graphoptimizer = GraphOptimizer(target_node=self)
         graphoptimizer.build()
         if GRAPH == 2: graphoptimizer.visualize("before")
@@ -340,32 +314,59 @@ class ClArray(Array):
 
     # ##### Binary Ops #####
     def add(self, other, out=None):
-        if not LAZY: return binary_op("add", self, other, ret=out)
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A+B"},
-                       operands={"A": a, "B": b}, is_lazy=True)
+        if not LAZY:
+            return elementwise_op("A+B", {"A": a, "B": b})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "A+B"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
 
     def sub(self, other, out=None):
-        if not LAZY: return binary_op("sub", self, other, ret=out)
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A-B"},
-                       operands={"A": a, "B": b}, is_lazy=True)
-    def div(self, other, out=None):
-        if not LAZY: return binary_op("div", self, other, ret=out)
-        a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A/B"},
-                       operands={"A": a, "B": b}, is_lazy=True)
-    def mul(self, other, out=None):
-        if not LAZY: return binary_op("mul", self, other, ret=out)
-        a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A*B"},
-                       operands={"A": a, "B": b}, is_lazy=True)
-    def pow(self, other, out=None):
         if not LAZY:
-            return binary_op("pow", self, other, ret=out)
+            return elementwise_op("A-B", {"A": a, "B": b})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "A-B"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
+
+    def div(self, other, out=None):
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "pow(A,B)"},
-                       operands={"A": a, "B": b}, is_lazy=True)
+        if not LAZY:
+            return elementwise_op("A/B", {"A": a, "B": b})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "A/B"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
+
+    def mul(self, other, out=None):
+        a, b = Array.broadcast(self, other)
+        if not LAZY:
+            return elementwise_op("A*B", {"A": a, "B": b})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "A*B"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
+
+    def pow(self, other, out=None):
+        a, b = Array.broadcast(self, other)
+        if not LAZY:
+            return elementwise_op("pow(A,B)", {"A": a, "B": b})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "pow(A,B)"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
 
     def matmul(self, other):
         if not LAZY: return matmul_op(self, other)
@@ -373,31 +374,56 @@ class ClArray(Array):
         if a.ndim == 1: a = a.reshape((1, *a.shape))
         if b.ndim == 1: b = b.reshape((*b.shape, 1))
         ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
-        return ClArray(shape=ret_shape, dtype=a.dtype, operator={"type": "matmul"},
-                       operands={"A": a, "B": b}, is_lazy=True)
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "matmul"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=ret_shape, dtype=a.dtype, lazy_info=lazy_info)
 
     def eq(self, other):
-        if not LAZY: return binary_op("eq", self, other)
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "(float)isequal(A,B)"},
-                       operands={"A": a, "B": b}, is_lazy=True)
+        if not LAZY:
+            return elementwise_op("(float)isequal(A,B)", {"A": a, "B": b})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "(float)isequal(A,B)"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
 
     def ge(self, other):
-        if not LAZY: return binary_op("ge", self, other)
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "(float)isgreaterequal(A,B)"},
-                       operands={"A": a, "B": b}, is_lazy=True)
+        if not LAZY:
+            return elementwise_op("(float)isgreaterequal(A,B)", {"A": a, "B": b})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "(float)isgreaterequal(A,B)"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
+
     def gt(self, other):
-        if not LAZY: return binary_op("gt", self, other)
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "(float)isgreater(A,B)"},
-                       operands={"A": a, "B": b}, is_lazy=True)
+        if not LAZY:
+            return elementwise_op("(float)isgreater(A,B)", {"A": a, "B": b})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "(float)isgreater(A,B)"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
 
     def drelu(self, other):
-        if not LAZY: return binary_op("drelu", self, other)
         a, b = Array.broadcast(self, other)
-        return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "B>0?A:0.0f"},
-                       operands={"A": a, "B": b}, is_lazy=True)
+        if not LAZY:
+            return elementwise_op("B>0?A:0.0f", {"A": a, "B": b})
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "elementwise", "code": "B>0?A:0.0f"},
+                     "operands": {"A": a, "B": b},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
 
     # ##### Reduce Ops #####
     def sum(self, axis=None, keepdims=False):
@@ -405,16 +431,24 @@ class ClArray(Array):
         operator = {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}}
         ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
-        return ClArray(shape=ret_shape, dtype=self.dtype, operator=operator,
-                       operands={"A": self}, is_lazy=True)
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}},
+                     "operands": {"A": self},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=ret_shape, dtype=self.dtype, lazy_info=lazy_info)
 
     def max(self, axis=None, keepdims=False):
         if not LAZY: return reduce_op("max", self, axis=axis, keepdims=keepdims)
         operator = {"type": "reduce", "code": "max", "args": {"axis": axis, "keepdims": keepdims}}
         ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
-        return ClArray(shape=ret_shape, dtype=self.dtype, operator=operator,
-                       operands={"A": self}, is_lazy=True)
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}},
+                     "operands": {"A": self},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=ret_shape, dtype=self.dtype, lazy_info=lazy_info)
 
     # ##### Slice Ops #####
     def __getitem__(self, key):

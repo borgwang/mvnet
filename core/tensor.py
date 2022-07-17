@@ -210,7 +210,8 @@ class Tensor:
 
     def __astensor(self, obj):
         if not isinstance(obj, self.__class__):
-            array = self.array.__class__(obj, dtype=self.dtype)
-            obj = Tensor(array)
+            if not isinstance(obj, self.array.__class__):
+                obj = self.array.__class__(obj, dtype=self.dtype)
+            obj = Tensor(obj)
         return obj
 

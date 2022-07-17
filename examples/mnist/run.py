@@ -37,7 +37,6 @@ def prepare_dataset(data_dir):
     with gzip.open(save_path, "rb") as f:
         return pickle.load(f, encoding="latin1")
 
-@profile
 def main(args):
     if args.seed >= 0:
         np.random.seed(args.seed)
@@ -51,7 +50,6 @@ def main(args):
     test_x = Tensor(test_x).to(args.device)
     test_y = Tensor(test_y)
 
-    """
     net = SequentialNet(
             Dense(256), ReLU(),
             Dense(128), ReLU(),
@@ -62,6 +60,7 @@ def main(args):
     net = SequentialNet(
             Dense(256), ReLU(),
             Dense(10)).to(args.device)
+    """
     optim = Adam(net.get_parameters(), lr=args.lr)
     loss_fn = SoftmaxCrossEntropyLoss()
 
@@ -74,8 +73,8 @@ def main(args):
             x, y = batch.inputs.to(args.device), batch.targets.to(args.device)
             pred = net.forward(x)
             loss = loss_fn(pred, y)
-            if LAZY: loss.array.resolve()
-            #loss.numpy()
+            loss.numpy()
+            import pdb; pdb.set_trace()
             #loss.backward()
             #optim.step()
             if args.onepass: sys.exit()

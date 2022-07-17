@@ -236,7 +236,7 @@ def test_minimal():
         b -= 0.0001 * db
     loss_final, w_final, b_final = loss, w, b
 
-    devices = ("gpu", "cpu")
+    devices = ("gpu",)
     for device in devices:
         x = Tensor(x_np).to(device)
         y = Tensor(y_np).to(device)

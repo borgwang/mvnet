@@ -1,8 +1,8 @@
 from core.dtype import float32
 
 class Array:
-    def __init__(self, shape=None, dtype=float32, is_lazy=False):
-        self.is_lazy = is_lazy
+    def __init__(self, shape=None, dtype=float32, lazy_info=None):
+        self.lazy_info = lazy_info
         self.shape, self.dtype = shape, dtype
         self.register_ops()
 
