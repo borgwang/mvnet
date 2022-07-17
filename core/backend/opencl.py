@@ -6,10 +6,10 @@ import pyopencl
 
 from env import DEBUG, GRAPH, LAZY
 from core.backend.base import Array
+from core.jit.graph import GraphOptimizer
 from core.dtype import int32, float32
 from utils.math import prod
-from utils.helper import varnamegetter, kernelstat, graphoptimizer
-
+from utils.helper import varnamegetter, kernelstat
 
 class ClContext:
     def __init__(self):
@@ -258,8 +258,10 @@ class ClArray(Array):
     def __init__(self, data=None, shape=None, dtype=float32, is_lazy=False, **kwargs):
         super().__init__(shape, dtype, is_lazy)
         if is_lazy:
+            # graph related attributes
             self.operator = kwargs["operator"]
             self.operands = kwargs["operands"]
+            self.indegree, self.outdegree = len(self.operands), 0
         else:
             if isinstance(data, pyopencl.Buffer):
                 self.buffer = data
@@ -271,6 +273,8 @@ class ClArray(Array):
                 else:
                     assert self.shape is not None, "cannot infer shape when without data"
                 self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
+            # graph related attributes
+            self.indegree, self.outdegree = 0, 0
             self.operator = None
             self.operands = {}
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
@@ -278,7 +282,6 @@ class ClArray(Array):
         self.offset = 0  # offset relative to the beginning of the buffer
         self.c_contiguous, self.f_contiguous = True, False
         self.__update_contiguousness()
-        self.outdegree = 0
 
     @property
     def size(self):
@@ -291,22 +294,18 @@ class ClArray(Array):
     # ##### Unary Ops #####
     def neg(self):
         if not LAZY: return unary_op("neg", self)
-        self.outdegree += 1
         return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "-A"},
                        operands={"A": self}, is_lazy=True)
     def exp(self):
         if not LAZY: return unary_op("exp", self)
-        self.outdegree += 1
         return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "exp(A)"},
                        operands={"A": self}, is_lazy=True)
     def log(self):
         if not LAZY: return unary_op("log", self)
-        self.outdegree += 1
         return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "log(A)"},
                        operands={"A": self}, is_lazy=True)
     def relu(self):
         if not LAZY: return unary_op("relu", self)
-        self.outdegree += 1
         return ClArray(shape=self.shape, dtype=self.dtype, operator={"type": "elementwise", "code": "max(A,0.0f)"},
                        operands={"A": self}, is_lazy=True)
 
@@ -368,37 +367,49 @@ class ClArray(Array):
         self.is_lazy = False
         return self
 
+    def _resolve2(self, node=None):
+        if node is None: node = self
+        for name, dep_node in node.operands.items():
+            if dep_node.is_lazy:
+                if len(node.operands) == 4 and name == "B":
+                    print("@@@@@@@@@", dep_node.operands["A"].numpy().sum())
+                dep_node.buffer = self._resolve2(dep_node).buffer
+                dep_node.is_lazy = False
+        return self.invoke(node.operator, node.operands)
+
+    def resolve2(self):
+        graphoptimizer = GraphOptimizer(target_node=self)
+        graphoptimizer.build()
+        graphoptimizer.optimize()
+        if GRAPH == 2: graphoptimizer.visualize()
+        return self._resolve2()
+
     # ##### Binary Ops #####
     def add(self, other, out=None):
         if not LAZY: return binary_op("add", self, other, ret=out)
         a, b = Array.broadcast(self, other)
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A+B"},
                        operands={"A": a, "B": b}, is_lazy=True)
 
     def sub(self, other, out=None):
         if not LAZY: return binary_op("sub", self, other, ret=out)
         a, b = Array.broadcast(self, other)
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A-B"},
                        operands={"A": a, "B": b}, is_lazy=True)
     def div(self, other, out=None):
         if not LAZY: return binary_op("div", self, other, ret=out)
         a, b = Array.broadcast(self, other)
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A/B"},
                        operands={"A": a, "B": b}, is_lazy=True)
     def mul(self, other, out=None):
         if not LAZY: return binary_op("mul", self, other, ret=out)
         a, b = Array.broadcast(self, other)
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "A*B"},
                        operands={"A": a, "B": b}, is_lazy=True)
     def pow(self, other, out=None):
         if not LAZY:
             return binary_op("pow", self, other, ret=out)
         a, b = Array.broadcast(self, other)
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "pow(A,B)"},
                        operands={"A": a, "B": b}, is_lazy=True)
 
@@ -408,34 +419,29 @@ class ClArray(Array):
         if a.ndim == 1: a = a.reshape((1, *a.shape))
         if b.ndim == 1: b = b.reshape((*b.shape, 1))
         ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=ret_shape, dtype=a.dtype, operator={"type": "matmul"},
                        operands={"A": a, "B": b}, is_lazy=True)
 
     def eq(self, other):
         if not LAZY: return binary_op("eq", self, other)
         a, b = Array.broadcast(self, other)
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "(float)isequal(A,B)"},
                        operands={"A": a, "B": b}, is_lazy=True)
 
     def ge(self, other):
         if not LAZY: return binary_op("ge", self, other)
         a, b = Array.broadcast(self, other)
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "(float)isgreaterequal(A,B)"},
                        operands={"A": a, "B": b}, is_lazy=True)
     def gt(self, other):
         if not LAZY: return binary_op("gt", self, other)
         a, b = Array.broadcast(self, other)
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "(float)isgreater(A,B)"},
                        operands={"A": a, "B": b}, is_lazy=True)
 
     def drelu(self, other):
         if not LAZY: return binary_op("drelu", self, other)
         a, b = Array.broadcast(self, other)
-        a.outdegree += 1; b.outdegree += 1
         return ClArray(shape=a.shape, dtype=a.dtype, operator={"type": "elementwise", "code": "B>0?A:0.0f"},
                        operands={"A": a, "B": b}, is_lazy=True)
 
@@ -445,7 +451,6 @@ class ClArray(Array):
         operator = {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}}
         ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
-        self.outdegree += 1
         return ClArray(shape=ret_shape, dtype=self.dtype, operator=operator,
                        operands={"A": self}, is_lazy=True)
 
@@ -454,7 +459,6 @@ class ClArray(Array):
         operator = {"type": "reduce", "code": "max", "args": {"axis": axis, "keepdims": keepdims}}
         ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
-        self.outdegree += 1
         return ClArray(shape=ret_shape, dtype=self.dtype, operator=operator,
                        operands={"A": self}, is_lazy=True)
 

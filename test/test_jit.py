@@ -133,7 +133,46 @@ def test_lazy_backward():
     #loss_np = (((x_np @ w_np + b_np) - y_np) ** 2).sum()
     #check_tensor(loss, loss_np, rtol=1e-3)
     loss.backward()
-    #if GRAPH == 2: get_array_graph(loss.array)
+    if GRAPH == 2: get_array_graph(loss.array)
     if GRAPH == 2: get_array_graph(w.grad)
-    #w -= 0.0001 * w.grad
-    #b -= 0.0001 * b.grad
+    # TODO: trigger the actual computation duration training
+
+def test_graph_optimizer():
+    BS = 64
+    idim = 2569
+    odim = 10
+    x_np = np.random.normal(0, 1, (BS, idim)).astype(np.float32)
+    y_np = np.random.normal(0, 1, (BS, odim)).astype(np.float32)
+    w_np = np.random.normal(0, 1, (idim, odim)).astype(np.float32)
+    b_np = np.zeros((1, odim)).astype(np.float32)
+
+    device = "gpu"
+    x = Tensor(x_np, name="x").to(device)
+    y = Tensor(y_np, name="y").to(device)
+    w = Tensor(w_np, requires_grad=True, name="w").to(device)
+    b = Tensor(b_np, requires_grad=True, name="b").to(device)
+    w.zero_grad(); b.zero_grad()
+
+    pred_tmp = x @ w + b
+    pred = pred_tmp / pred_tmp.sum()
+    cost = (pred - y) ** 2
+    #loss = cost.log().exp().sum()
+    loss = cost.sum()
+
+    pred_tmp_np = x_np @ w_np + b_np
+    pred_np = pred_tmp_np / pred_tmp_np.sum()
+    #loss_np = np.sum(np.exp(np.log((pred_np - y_np)** 2)))
+    loss_np = np.sum((pred_np - y_np)**2)
+    ret = loss.array.resolve2()
+    print()
+    print("!!!!!!!!!!", pred_np.sum())
+    print(ret.numpy(), loss_np)
+    import pdb; pdb.set_trace()
+
+    #loss.backward()
+
+    #from core.jit.graph import GraphOptimizer
+    #graphoptimizer = GraphOptimizer(target_node=loss.array).build()
+    #graphoptimizer.optimize()
+    #if GRAPH == 2: graphoptimizer.visualize()
+

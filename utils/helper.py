@@ -1,3 +1,4 @@
+import itertools
 import os
 import string
 import time
@@ -18,19 +19,19 @@ def genname(prefix, *args):
 
 class VarNameGetter:
     def __init__(self):
-        self.candidate = list(string.ascii_lowercase)
+        letters = tuple(string.ascii_lowercase)
+        candidates = itertools.product(letters, letters, letters)
+        self.candidates = tuple("".join(s) for s in candidates)
+
+        self.candidates = letters
         self.reset()
 
-    def get(self, obj):
-        if obj in self.cache:
-            return self.cache[obj]
-        name = self.candidate[self.idx]
-        self.cache[obj] = name
+    def get(self):
+        name = self.candidates[self.idx]
         self.idx += 1
         return name
 
     def reset(self):
-        self.cache = {}
         self.idx = 0
 
 varnamegetter = VarNameGetter()
@@ -108,30 +109,3 @@ class KernelStat:
 
 kernelstat = KernelStat()
 
-class GraphOptimizer:
-    def __init__(self):
-        pass
-
-    def build(self, node):
-        operator = node.operator
-        for name, subnode in node.operands.items():
-
-            pass
-
-    def __combine_elementwise(self):
-        pass
-
-    def __simplify_arithmetic(self):
-        pass
-
-    def __operation_fusion(self):
-        pass
-
-    def optimize(self):
-        pass
-
-    def visualize(self):
-        pass
-
-
-graphoptimizer = GraphOptimizer()
