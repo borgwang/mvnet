@@ -1,7 +1,7 @@
 import os
 import string
 import networkx as nx
-from env import OPT1
+from env import OPT1, DEBUG
 from utils.helper import varnamegetter
 
 class GraphOptimizer:
@@ -26,21 +26,24 @@ class GraphOptimizer:
         operands = {}
         operator = node.operator
         for var_name, dep_node in node.operands.items():
-            if dep_node.is_lazy:
-                self._merge_elementwise(dep_node)
+            if not dep_node.is_lazy:
+                new_var_name = varnamegetter.get()
+                operands[new_var_name] = dep_node
+                if "code" in operator:
+                    operator["code"] = operator["code"].replace(var_name, new_var_name)
+            else:
+                if not dep_node.is_visited: self._merge_elementwise(dep_node)
                 if operator["type"] == "elementwise" and dep_node.operator["type"] == "elementwise" and dep_node.outdegree == 1:
                     operands.update(dep_node.operands)
                     var_expr = f"({dep_node.operator['code']})"
                     operator["code"] = operator["code"].replace(var_name, var_expr)
                 else:
-                    operands[var_name] = dep_node
-            else:
-                if operator["type"] == "elementwise":
                     new_var_name = varnamegetter.get()
                     operands[new_var_name] = dep_node
-                    operator["code"] = operator["code"].replace(var_name, new_var_name)
-                else:
-                    operands[var_name] = dep_node
+                    if "code" in operator:
+                        operator["code"] = operator["code"].replace(var_name, new_var_name)
+        print(f"node {id(node)} resolve finished operator={operator}, operrands={operands}")
+        node.is_visited = True
         node.operator, node.operands = operator, operands
 
     def _simplify_arithmetic(self):
@@ -55,7 +58,7 @@ class GraphOptimizer:
     def debug(self, node=None, depth=0):
         pass
 
-    def visualize(self):
+    def visualize(self, prefix=""):
         color_map = {"reduce": "#ecc30b", "elementwise": "#84bcda",
                      "matmul": "#f37748", "contiguous": "#d56062"}
         def build_nx_graph(node, G):
@@ -81,7 +84,7 @@ class GraphOptimizer:
             return G
         G = nx.DiGraph()
         G = build_nx_graph(self.target_node, G)
-        mode = "array"
+        mode = prefix + "_array"
         nx.drawing.nx_pydot.write_dot(G, f"/tmp/{mode}.dot")
         os.system(f"dot -Tsvg /tmp/{mode}.dot -o /tmp/{mode}.svg")
         print(f"[GRAPH] save to /tmp/{mode}.svg")

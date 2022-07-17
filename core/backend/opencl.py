@@ -262,6 +262,7 @@ class ClArray(Array):
             self.operator = kwargs["operator"]
             self.operands = kwargs["operands"]
             self.indegree, self.outdegree = len(self.operands), 0
+            self.is_visited = False
         else:
             if isinstance(data, pyopencl.Buffer):
                 self.buffer = data
@@ -277,6 +278,7 @@ class ClArray(Array):
             self.indegree, self.outdegree = 0, 0
             self.operator = None
             self.operands = {}
+            self.is_visited = False
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(len(self.shape)))
         self.offset = 0  # offset relative to the beginning of the buffer
@@ -315,74 +317,26 @@ class ClArray(Array):
         if operator["type"] == "elementwise":
             return elementwise_op(operator["code"], operands, **operator.get("args", {}))
         elif operator["type"] == "reduce":
-            return reduce_op(operator["code"], operands["A"], **operator.get("args", {}))
+            return reduce_op(operator["code"], *operands.values(), **operator.get("args", {}))
         elif operator["type"] == "matmul":
-            return matmul_op(operands["A"], operands["B"], **operator.get("args", {}))
-
-    def _resolve(self, i):
-        """graph optimization"""
-        if DEBUG: print(f"{3*' '*i}[resolve] i={i} _resolve [{str(id(self))[-4:]}] start")
-        # 返回前置节点合并后的操作以及操作数
-        operator = self.operator
-        operands = {}
-        # for eager operands
-        for name, arr in self.operands.items():
-            if arr.is_lazy:
-                continue
-            if operator["type"] == "elementwise":
-                newname = varnamegetter.get(arr)
-                operands[newname] = arr
-                operator["code"] = operator["code"].replace(name, newname)
-            else:
-                operands[name] = arr
-        # for lazy operands
-        for name, arr in self.operands.items():
-            if not arr.is_lazy:
-                continue
-            op, opd = arr._resolve(i+1)
-            if operator["type"] != op["type"]:
-                if DEBUG: print(f"{3*' '*i}[resolve] {operator['type']} != {op['type']}. invoke compute {op}, operands={[(k, str(id(v))[-4:]) for k,v in opd.items()]}")
-                eager = self.invoke(op, opd)
-                arr.buffer, arr.is_lazy = eager.buffer, False
-                if DEBUG: print(f"@@@@@@ {str(id(self))[-4:]} update operands {str(id(arr))[-4:]}")
-                operands[name] = arr
-            elif arr.outdegree > 1:
-                if DEBUG: print(f"{3*' '*i}[resolve] multi-branch operand {str(id(arr))[-4:]}. invoke compute {op}, operands={[(k, str(id(v))[-4:]) for k,v in opd.items()]}")
-                eager = self.invoke(op, opd)
-                arr.buffer, arr.is_lazy = eager.buffer, False
-                if DEBUG: print(f"@@@@@@ {str(id(self))[-4:]} update operands {str(id(arr))[-4:]}")
-                operands[name] = arr
-            else:
-                if op["type"] == "elementwise":
-                    operands.update(opd)
-                    operator["code"] = operator["code"].replace(name, f"({op['code']})")
-        if DEBUG: print(f"{3*' '*i}[resolve] i={i} _resolve [{str(id(self))[-4:]}] finish. operator={operator}, operands: {[(k, str(id(v))[-4:]) for k, v in operands.items()]}")
-        return operator, operands
+            return matmul_op(*operands.values(), **operator.get("args", {}))
 
     def resolve(self):
-        varnamegetter.reset()
-        operator, operands = self._resolve(0)
-        if DEBUG: print(f"[resolve] final invoke compute {operator}, operands={[(k, str(id(v))[-4:]) for k,v in operands.items()]}")
-        self.buffer = self.invoke(operator, operands).buffer
-        self.is_lazy = False
-        return self
-
-    def _resolve2(self, node=None):
-        if node is None: node = self
-        for name, dep_node in node.operands.items():
-            if dep_node.is_lazy:
-                if len(node.operands) == 4 and name == "B":
-                    print("@@@@@@@@@", dep_node.operands["A"].numpy().sum())
-                dep_node.buffer = self._resolve2(dep_node).buffer
-                dep_node.is_lazy = False
-        return self.invoke(node.operator, node.operands)
-
-    def resolve2(self):
+        def _resolve(node=None):
+            if node is None: node = self
+            for name, dep_node in node.operands.items():
+                if dep_node.is_lazy:
+                    dep_node.buffer = _resolve(dep_node).buffer
+                    dep_node.is_lazy = False
+            return self.invoke(node.operator, node.operands)
         graphoptimizer = GraphOptimizer(target_node=self)
         graphoptimizer.build()
+        if GRAPH == 2: graphoptimizer.visualize("before")
         graphoptimizer.optimize()
-        if GRAPH == 2: graphoptimizer.visualize()
-        return self._resolve2()
+        if GRAPH == 2: graphoptimizer.visualize("after")
+        self.buffer = _resolve().buffer
+        self.is_lazy = False
+        return self
 
     # ##### Binary Ops #####
     def add(self, other, out=None):

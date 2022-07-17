@@ -2,7 +2,7 @@ import runtime_path  # isort:skip
 
 import numpy as np
 
-from env import LAZY, GRAPH
+from env import LAZY, GRAPH, OPT1
 from core.tensor import Tensor
 from utils.helper import get_tensor_graph, get_array_graph, kernelstat
 
@@ -97,7 +97,10 @@ def test_lazy_forward():
     check_tensor(loss, loss_np, rtol=1e-3)
     if LAZY:
         assert kernelstat.get("matmul") == 0
-        assert kernelstat.get("elementwise") == 1
+        if not OPT1:
+            assert kernelstat.get("elementwise") == 4
+        else:
+            assert kernelstat.get("elementwise") == 1
 
     kernelstat.reset()
     check_tensor(loss, loss_np, rtol=1e-3)
@@ -107,9 +110,6 @@ def test_lazy_forward():
         assert kernelstat.get("elementwise") == 0
         assert kernelstat.get("reeduce") == 0
         assert kernelstat.get("contiguous") == 1
-
-    if GRAPH == 2:
-        get_array_graph(loss.array)
 
 def test_lazy_backward():
     BS = 64
@@ -130,12 +130,8 @@ def test_lazy_backward():
     pred = x @ w + b
     cost = (pred - y) ** 2
     loss = cost.sum()
-    #loss_np = (((x_np @ w_np + b_np) - y_np) ** 2).sum()
-    #check_tensor(loss, loss_np, rtol=1e-3)
-    loss.backward()
-    if GRAPH == 2: get_array_graph(loss.array)
-    if GRAPH == 2: get_array_graph(w.grad)
-    # TODO: trigger the actual computation duration training
+
+    loss.backward() # TODO: trigger the actual computation duration training
 
 def test_graph_optimizer():
     BS = 64
@@ -156,23 +152,12 @@ def test_graph_optimizer():
     pred_tmp = x @ w + b
     pred = pred_tmp / pred_tmp.sum()
     cost = (pred - y) ** 2
-    #loss = cost.log().exp().sum()
+    loss = cost.log().exp().sum()
     loss = cost.sum()
 
     pred_tmp_np = x_np @ w_np + b_np
     pred_np = pred_tmp_np / pred_tmp_np.sum()
-    #loss_np = np.sum(np.exp(np.log((pred_np - y_np)** 2)))
+    loss_np = np.sum(np.exp(np.log((pred_np - y_np)** 2)))
     loss_np = np.sum((pred_np - y_np)**2)
-    ret = loss.array.resolve2()
-    print()
-    print("!!!!!!!!!!", pred_np.sum())
-    print(ret.numpy(), loss_np)
-    import pdb; pdb.set_trace()
-
-    #loss.backward()
-
-    #from core.jit.graph import GraphOptimizer
-    #graphoptimizer = GraphOptimizer(target_node=loss.array).build()
-    #graphoptimizer.optimize()
-    #if GRAPH == 2: graphoptimizer.visualize()
+    check_tensor(loss, loss_np)
 
