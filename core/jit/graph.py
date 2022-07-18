@@ -12,10 +12,18 @@ class GraphOptimizer:
 
     def build(self, node=None):
         if node is None: node = self.target_node
+        # reset outdegree
+        for name, dep_node in node.lazy_info["operands"].items():
+            dep_node.node_info["outdegree"] = 0
+            self.build(dep_node)
         for name, dep_node in node.lazy_info["operands"].items():
             dep_node.node_info["outdegree"] += 1
             self.build(dep_node)
         return self
+
+    def _solve_shape(self, node):
+        for name, dep_node in node.lazy_info["operands"].items():
+            pass
 
     def _merge_elementwise(self, node):
         """element-wise ops (unary or binary) can be merged, thus reduce kernel calls. Consider the following computational graph.
@@ -24,24 +32,24 @@ class GraphOptimizer:
         """
         operands = {}
         operator = node.lazy_info["operator"]
-        for var_name, dep_node in node.lazy_info["operands"].items():
+        for name, dep_node in node.lazy_info["operands"].items():
             if not dep_node.is_lazy:
-                new_var_name = varnamegetter.get()
-                operands[new_var_name] = dep_node
+                new_name = varnamegetter.get()
+                operands[new_name] = dep_node
                 if "code" in operator:
-                    operator["code"] = operator["code"].replace(var_name, new_var_name)
+                    operator["code"] = operator["code"].replace(name, new_name)
             else:
                 if not dep_node.lazy_info["is_visited"]: self._merge_elementwise(dep_node)
                 if operator["type"] == "elementwise" and dep_node.lazy_info["operator"]["type"] == "elementwise" and \
                         dep_node.node_info["outdegree"] == 1:
                     operands.update(dep_node.lazy_info["operands"])
-                    var_expr = f"({dep_node.lazy_info['operator']['code']})"
-                    operator["code"] = operator["code"].replace(var_name, var_expr)
+                    experssion = f"({dep_node.lazy_info['operator']['code']})"
+                    operator["code"] = operator["code"].replace(name, experssion)
                 else:
-                    new_var_name = varnamegetter.get()
-                    operands[new_var_name] = dep_node
+                    new_name = varnamegetter.get()
+                    operands[new_name] = dep_node
                     if "code" in operator:
-                        operator["code"] = operator["code"].replace(var_name, new_var_name)
+                        operator["code"] = operator["code"].replace(name, new_name)
         node.node_info["is_visited"] = True
         node.lazy_info["operator"], node.lazy_info["operands"] = operator, operands
 
@@ -52,6 +60,7 @@ class GraphOptimizer:
         pass
 
     def optimize(self):
+        self._solve_shape(node=self.target_node)
         if OPT1: self._merge_elementwise(node=self.target_node)
 
     def debug(self, node=None, depth=0):

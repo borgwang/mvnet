@@ -51,6 +51,20 @@ class Array:
             b = b.expand(broadcast_shape)
         return a, b
 
+    """
+    def broadcast2(*arrs):
+        if len(set([arr.shape for arr in arrs])) == 1:
+            return arrs
+        reveted_shapes = [arr.shape[::-1] for arr in arrs])
+        min_ndim = min([arr.ndim for arr in arrs])
+        for i in range(min_ndim):
+            unique = [shape[i] for shape in reverted_shapes]
+            if set(unique) > 2 or (set(unique) == 2 and 1 not in unique):
+                raise ValueError(f"Error broadcasting for {arrs}")
+        ndim = min([arr.ndim for arr in arrs])
+        retarrs = []
+    """
+
     @classmethod
     def register_ops(cls):
         for op in ("add", "sub", "mul", "div", "pow"):

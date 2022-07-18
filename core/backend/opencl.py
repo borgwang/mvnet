@@ -46,7 +46,7 @@ cl = ClContext()
 
 def elementwise_op(code, inp):
     assert len(set([tuple(x.shape) for x in inp.values()])) == 1, \
-        f"Invalid input shape for elementwise op {inp}"
+        f"Invalid input shape for elementwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
     a = inp[list(inp.keys())[0]]
     ret = a.__class__(shape=a.shape, dtype=a.dtype)
     args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
@@ -72,7 +72,7 @@ def elementwise_op(code, inp):
     if GRAPH: e.wait()
     return ret
 
-def matmul_op(a, b):
+def matmul_op(a, b):  # asd
     # rule: https://numpy.org/doc/stable/reference/generated/numpy.matmul.html
     squeezes = []
     if a.ndim == 1: a = a.reshape((1, *a.shape)); squeezes.append(0)
@@ -120,6 +120,7 @@ def matmul_op(a, b):
     kernelstat.log("matmul")
     if GRAPH: e.wait()
     for axis in squeezes:
+        print("########## call squeeze inside real ops which may return a LazyArray.")
         ret = ret.squeeze(axis)
     return ret
 
@@ -147,7 +148,7 @@ def contiguous_op(x):
     return ret
 
 def reduce_op(name, x, axis=None, keepdims=True):
-    x = contiguous_op(x) if not x.c_contiguous else x
+    #x = contiguous_op(x) if not x.c_contiguous else x
     code_map = {"sum": "A+B", "max": "max(A,B)"}
     padval_map = {"sum": "0.0f", "max": "-INFINITY"}
     x_shp = x.shape
@@ -210,7 +211,7 @@ def reduce_op(name, x, axis=None, keepdims=True):
     return ret
 
 
-class ClArray(Array):
+class ClArray(Array):  #asd
     """Pyopencl's multidimension array class only implement limited functionality. So we write our own."""
     def __init__(self, data=None, shape=None, dtype=float32, lazy_info=None):
         super().__init__(shape, dtype, lazy_info)
@@ -231,7 +232,7 @@ class ClArray(Array):
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(len(self.shape)))
         self.offset = 0  # offset relative to the beginning of the buffer
         self.c_contiguous, self.f_contiguous = True, False
-        self.__update_contiguousness()
+        self._update_contiguousness()
 
     @property
     def is_lazy(self):
@@ -249,7 +250,13 @@ class ClArray(Array):
     def ndim(self):
         return len(self.shape)
 
-    # ##### Unary Ops #####
+    def numpy(self):
+        arr = self.resolve() if self.is_lazy else self
+        data = np.empty(arr.shape, dtype=arr.dtype)
+        cl.enqueue("copy", data, contiguous_op(arr).buffer, is_blocking=True)
+        return data
+
+    # ##### Elementwise Ops #####
     def neg(self):
         if not LAZY: return elementwise_op("-A", {"A": self})
         lazy_info = {"is_lazy": True,
@@ -258,6 +265,7 @@ class ClArray(Array):
                      "is_visited": False,
                      "child": 0}
         return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
+
     def exp(self):
         if not LAZY: return elementwise_op("exp(A)", {"A": self})
         lazy_info = {"is_lazy": True,
@@ -275,6 +283,7 @@ class ClArray(Array):
                      "is_visited": False,
                      "child": 0}
         return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
+
     def relu(self):
         if not LAZY: return elementwise_op("max(A,0.0f)", {"A": self})
         lazy_info = {"is_lazy": True,
@@ -284,35 +293,6 @@ class ClArray(Array):
                      "child": 0}
         return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
 
-    @staticmethod
-    def invoke(operator, operands):
-        # invoke the actual computation
-        if operator["type"] == "elementwise":
-            return elementwise_op(operator["code"], operands, **operator.get("args", {}))
-        elif operator["type"] == "reduce":
-            return reduce_op(operator["code"], *operands.values(), **operator.get("args", {}))
-        elif operator["type"] == "matmul":
-            return matmul_op(*operands.values(), **operator.get("args", {}))
-
-    def resolve(self):
-        def _resolve(node=None):
-            if node is None: node = self
-            info = node.lazy_info
-            for name, dep_node in info["operands"].items():
-                if dep_node.is_lazy:
-                    dep_node.buffer = _resolve(dep_node).buffer
-                    dep_node.is_lazy = False
-            return self.invoke(info["operator"], info["operands"])
-        graphoptimizer = GraphOptimizer(target_node=self)
-        graphoptimizer.build()
-        if GRAPH == 2: graphoptimizer.visualize("before")
-        graphoptimizer.optimize()
-        if GRAPH == 2: graphoptimizer.visualize("after")
-        self.buffer = _resolve().buffer
-        self.is_lazy = False
-        return self
-
-    # ##### Binary Ops #####
     def add(self, other, out=None):
         a, b = Array.broadcast(self, other)
         if not LAZY:
@@ -371,9 +351,13 @@ class ClArray(Array):
     def matmul(self, other):
         if not LAZY: return matmul_op(self, other)
         a, b = self, other
-        if a.ndim == 1: a = a.reshape((1, *a.shape))
-        if b.ndim == 1: b = b.reshape((*b.shape, 1))
-        ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
+        a_shape = (1, *a.shape) if a.ndim == 1 else a.shape
+        b_shape = (*b.shape, 1) if b.ndim == 1 else b.shape
+        ret_shape = tuple((*(a_shape)[:-1], b_shape[-1]))
+        if a.ndim == 1 and ret_shape[0] == 1: ret_shape = ret_shape[1:]
+        if b.ndim == 1 and ret_shape[-1] == 1: ret_shape = ret_shape[:-1]
+        if not a.c_contiguous or a.f_contiguous: a = a.contiguous()
+        if not b.c_contiguous or b.f_contiguous: b = b.contiguous()
         lazy_info = {"is_lazy": True,
                      "operator": {"type": "matmul"},
                      "operands": {"A": a, "B": b},
@@ -427,30 +411,38 @@ class ClArray(Array):
 
     # ##### Reduce Ops #####
     def sum(self, axis=None, keepdims=False):
-        if not LAZY: return reduce_op("sum", self, axis=axis, keepdims=keepdims)
+        if not LAZY:
+            a = contiguous_op(self) if not self.c_contiguous else self
+            return reduce_op("sum", a, axis=axis, keepdims=keepdims)
+        a = self.contiguous() if not self.c_contiguous else self
         operator = {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}}
         ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
+        ret_shape = tuple(ret_shape)
         lazy_info = {"is_lazy": True,
                      "operator": {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}},
-                     "operands": {"A": self},
+                     "operands": {"A": a},
                      "is_visited": False,
                      "child": 0}
         return ClArray(shape=ret_shape, dtype=self.dtype, lazy_info=lazy_info)
 
     def max(self, axis=None, keepdims=False):
-        if not LAZY: return reduce_op("max", self, axis=axis, keepdims=keepdims)
+        if not LAZY:
+            a = contiguous_op(self) if not self.c_contiguous else self
+            return reduce_op("max", a, axis=axis, keepdims=keepdims)
+        a = self.contiguous() if not self.c_contiguous else self
         operator = {"type": "reduce", "code": "max", "args": {"axis": axis, "keepdims": keepdims}}
         ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
+        ret_shape = tuple(ret_shape)
         lazy_info = {"is_lazy": True,
-                     "operator": {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}},
-                     "operands": {"A": self},
+                     "operator": {"type": "reduce", "code": "max", "args": {"axis": axis, "keepdims": keepdims}},
+                     "operands": {"A": a},
                      "is_visited": False,
                      "child": 0}
         return ClArray(shape=ret_shape, dtype=self.dtype, lazy_info=lazy_info)
 
-    # ##### Slice Ops #####
+    # ##### View Ops #####
     def __getitem__(self, key):
         # TODO: handle step
         is_basic = lambda k: isinstance(k, (slice, int))
@@ -484,7 +476,6 @@ class ClArray(Array):
         # unary_op("noop", value, ret=item)
         assert False, "TODO: implement assign ops"
 
-    # ##### Movement Ops #####
     def reshape(self, shape):
         if -1 in shape:
             size = prod(self.shape)
@@ -502,7 +493,7 @@ class ClArray(Array):
             else:
                 strides = (prod(shape[:i]) for i in range(len(shape)))
             inst.shape, inst.strides = tuple(shape), tuple(strides)
-            inst.__update_contiguousness()
+            inst._update_contiguousness()
         else:
             inst = self.contiguous().reshape(shape)
         return inst
@@ -535,10 +526,11 @@ class ClArray(Array):
         inst = copy.copy(self)
         inst.strides = tuple(inst.strides[a] for a in axes)
         inst.shape = tuple(inst.shape[a] for a in axes)
-        inst.__update_contiguousness()
+        inst._update_contiguousness()
         return inst
 
     # ##### Creation Ops #####
+    # TODO: lazy creation
     @classmethod
     def empty(cls, shape, dtype=float32):
         return cls(shape=shape, dtype=dtype)
@@ -559,17 +551,50 @@ class ClArray(Array):
         buffer = cl.rng.normal(mu=loc, sigma=scale, shape=shape, dtype=dtype, cq=cl.queue).data
         return cls(data=buffer, shape=shape, dtype=dtype)
 
-    def numpy(self):
-        arr = self.resolve() if self.is_lazy else self
-        data = np.empty(arr.shape, dtype=arr.dtype)
-        cl.enqueue("copy", data, arr.contiguous().buffer, is_blocking=True)
-        return data
-
+    # ##### Special Ops ######
     def contiguous(self):
-        assert not self.is_lazy, "LazyArray should be resolve first."
-        return contiguous_op(self)
+        if not LAZY: return contiguous_op(self)
+        lazy_info = {"is_lazy": True,
+                     "operator": {"type": "contiguous"},
+                     "operands": {"A": self},
+                     "is_visited": False,
+                     "child": 0}
+        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
 
-    def __update_contiguousness(self):
+    # ##### Lazy #####
+    @staticmethod
+    def _invoke(operator, operands):
+        # invoke the actual computation
+        if operator["type"] == "elementwise":
+            return elementwise_op(operator["code"], operands, **operator.get("args", {}))
+        elif operator["type"] == "reduce":
+            return reduce_op(operator["code"], *operands.values(), **operator.get("args", {}))
+        elif operator["type"] == "matmul":
+            return matmul_op(*operands.values(), **operator.get("args", {}))
+        elif operator["type"] == "contiguous":
+            return contiguous_op(*operands.values(), **operator.get("args", {}))
+        else:
+            raise ValueError(f"Invoke invalid operator {operator}")
+
+    def resolve(self):
+        def recursive_resolve(node=None):
+            if node is None: node = self
+            info = node.lazy_info
+            for name, dep_node in info["operands"].items():
+                if dep_node.is_lazy:
+                    dep_node.buffer = recursive_resolve(dep_node).buffer
+                    dep_node.is_lazy = False
+            return self._invoke(info["operator"], info["operands"])
+        graphoptimizer = GraphOptimizer(target_node=self)
+        graphoptimizer.build()
+        if GRAPH == 2: graphoptimizer.visualize("before")
+        graphoptimizer.optimize()
+        if GRAPH == 2: graphoptimizer.visualize("after")
+        self.buffer = recursive_resolve().buffer
+        self.is_lazy = False
+        return self
+
+    def _update_contiguousness(self):
         strides = [self.strides[i] for i in range(self.ndim) if self.shape[i] != 1]
         sorted_strides = sorted(strides)
         self.f_contiguous = sorted_strides == strides
