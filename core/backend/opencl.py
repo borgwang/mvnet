@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from functools import lru_cache
 import copy
 from collections import defaultdict
@@ -5,11 +6,21 @@ import numpy as np
 import pyopencl
 
 from env import DEBUG, GRAPH, LAZY
-from core.backend.base import Array
+from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps, ContiguousOps
 from core.jit.graph import GraphOptimizer
 from core.dtype import int32, float32
 from utils.math import prod
 from utils.helper import varnamegetter, kernelstat
+
+ELEMWISE_MAPPING = {
+    ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)", ElemwiseOps.LOG: "log(A)",
+    ElemwiseOps.RELU: "max(A,0.0f)", ElemwiseOps.ADD: "A+B", ElemwiseOps.SUB: "A-B",
+    ElemwiseOps.DIV: "A/B", ElemwiseOps.MUL: "A*B", ElemwiseOps.POW: "pow(A,B)",
+    ElemwiseOps.EQ: "(float)isequal(A,B)", ElemwiseOps.GE: "(float)isgreaterequal(A,B)",
+    ElemwiseOps.GT: "(float)isgreater(A,B)", ElemwiseOps.DRELU: "B>0?A:0.0f"
+}
+REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
+REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
 class ClContext:
     def __init__(self):
@@ -44,11 +55,15 @@ class ClContext:
 
 cl = ClContext()
 
-def elementwise_op(code, inp):
+def elemwise_op(op_info):
+    inp = op_info.operands
     assert len(set([tuple(x.shape) for x in inp.values()])) == 1, \
-        f"Invalid input shape for elementwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
+        f"Invalid input shape for elemwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
     a = inp[list(inp.keys())[0]]
-    ret = a.__class__(shape=a.shape, dtype=a.dtype)
+    if op_info.args.get("out", None):
+        ret = op_info.args["out"]
+    else:
+        ret = a.__class__(shape=a.shape, dtype=a.dtype)
     args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
     args += "".join(f"int {name}_ofst, " for name in inp)
     args += "".join(f"__global const float *inp_{name}, " for name in inp)
@@ -56,75 +71,23 @@ def elementwise_op(code, inp):
     for i in range(ret.ndim):
         update += f"idx=ptr/res_s{i}; ptr%=res_s{i};" + "".join(f"{name}_i+=idx*{name}_s{i};" for name in inp)
     assign = ";".join(f"float {name}=inp_{name}[{name}_i+{name}_ofst]" for name in inp)
-    src = f"""__kernel void elementwise_op({args} __global float *ret) {{
+    src = f"""__kernel void ElemwiseOp({args} __global float *ret) {{
       {";".join(f"int {name}_i=0" for name in inp)};
       int idx=0, gl_id=get_global_id(0); int ptr=gl_id;
-      {update};
-      {assign};
-      ret[gl_id] = {code};
+      {update}; {assign};
+      ret[gl_id] = {op_info.code};
     }}"""
-    op = cl.build("elementwise_op", src)
+    op = cl.build("ElemwiseOp", src)
     args = [int32(s) for ss in zip(*[x.strides for x in (list(inp.values())+[ret])]) for s in ss]
     args += [int32(x.offset) for x in inp.values()]
     args += [x.buffer for x in inp.values()]
     e = op((prod(a.shape),), None, *args, ret.buffer)
-    kernelstat.log("elementwise")
+    kernelstat.log(ElemwiseOps)
     if GRAPH: e.wait()
     return ret
 
-def matmul_op(a, b):  # asd
-    # rule: https://numpy.org/doc/stable/reference/generated/numpy.matmul.html
-    squeezes = []
-    if a.ndim == 1: a = a.reshape((1, *a.shape)); squeezes.append(0)
-    if b.ndim == 1: b = b.reshape((*b.shape, 1)); squeezes.append(-1)
-    ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
-
-    if a.ndim > 3: a = a.reshape((prod(a.shape[:-2]), *a.shape[2:]))
-    if b.ndim > 3: b = b.reshape((prod(b.shape[:-2]), *b.shape[2:]))
-    if a.ndim == 2: a = a.reshape((1, *a.shape))
-    if b.ndim == 2: b = b.reshape((1, *b.shape))
-    if a.shape[0] != b.shape[0]:  # broadcasting
-        assert a.shape[0] == 1 or b.shape[0] == 1
-        if a.shape[0] == 1 and b.shape[0] != 1: a = a.expand((b.shape[0], *a.shape[1:]))
-        if b.shape[0] == 1 and a.shape[0] != 1: b = b.expand((a.shape[0], *b.shape[1:]))
-    assert a.shape[0] == b.shape[0] and a.shape[2] == b.shape[1], \
-            f"invalid shape for matmul {a.shape} @ {b.shape}"
-    ret = a.__class__(shape=ret_shape, dtype=a.dtype)
-    assert ret.c_contiguous, f"ret must be contiguous. {ret}"
-    BS, M, K, N = prod(a.shape[:-2]), a.shape[-2], a.shape[-1], b.shape[-1]
-    gs = 1
-    while gs <= 8 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
-        gs *= 2
-    gs //= 2
-    if DEBUG > 1: print(f"[DEBUG] BS:{BS} M:{M} K:{K} N:{N} grp_size:{gs}")
-    src = f"""#define GS {gs}
-    __kernel void matmul_op(int BS, int M, int N, int K,
-        {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))} int a_ofst, int b_ofst,
-        __global const float *A, __global const float *B, __global float *C) {{
-      int bs=get_global_id(0), m=get_global_id(1), n=get_global_id(2), i=get_local_id(1), j=get_local_id(2);
-      __local float Alcl[GS][GS], Blcl[GS][GS];
-      float acc = 0.0f;
-      for (int t=0; t<K/GS; t++) {{
-        Alcl[i][j] = A[bs*A_s0+m*A_s1+(t*GS+j)*A_s2+a_ofst];
-        Blcl[i][j] = B[bs*B_s0+(t*GS+i)*B_s1+n*B_s2+b_ofst];
-        barrier(CLK_LOCAL_MEM_FENCE);
-        for (int k=0; k<GS; k++) acc += Alcl[i][k] * Blcl[k][j];
-        barrier(CLK_LOCAL_MEM_FENCE);
-      }}
-      C[bs*M*N+m*N+n] = acc;
-    }}"""
-    op = cl.build("matmul_op", src)
-    strides = [s for ss in zip(a.strides, b.strides) for s in ss]
-    args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
-    e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
-    kernelstat.log("matmul")
-    if GRAPH: e.wait()
-    for axis in squeezes:
-        print("########## call squeeze inside real ops which may return a LazyArray.")
-        ret = ret.squeeze(axis)
-    return ret
-
-def contiguous_op(x):
+def contiguous_op(op_info):
+    x = op_info.operands["A"]
     ret = x.__class__(shape=x.shape, dtype=x.dtype)
     x_ndim, x_shape, x_strides = x.ndim, x.shape, x.strides
     if not x_ndim:
@@ -147,13 +110,51 @@ def contiguous_op(x):
     if GRAPH: e.wait()
     return ret
 
-def reduce_op(name, x, axis=None, keepdims=True):
-    #x = contiguous_op(x) if not x.c_contiguous else x
-    code_map = {"sum": "A+B", "max": "max(A,B)"}
-    padval_map = {"sum": "0.0f", "max": "-INFINITY"}
+def matmul_op(op_info):
+    # rule: https://numpy.org/doc/stable/reference/generated/numpy.matmul.html
+    a, b = op_info.operands["A"], op_info.operands["B"]
+    ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
+    if op_info.args.get("out", None):
+        ret = op_info.args["out"]
+        assert ret.c_contiguous and ret.shape == ret_shape
+    else:
+        ret = a.__class__(shape=ret_shape, dtype=a.dtype)
+    BS, M, K, N = prod(a.shape[:-2]), a.shape[-2], a.shape[-1], b.shape[-1]
+    gs = 1
+    while gs <= 8 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
+        gs *= 2
+    gs //= 2
+    if DEBUG > 1: print(f"[DEBUG] BS:{BS} M:{M} K:{K} N:{N} grp_size:{gs}")
+    src = f"""__kernel void matmul_op(int BS, int M, int N, int K,
+        {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))} int a_ofst, int b_ofst,
+        __global const float *A, __global const float *B, __global float *C) {{
+      int bs=get_global_id(0), m=get_global_id(1), n=get_global_id(2), i=get_local_id(1), j=get_local_id(2);
+      __local float Alcl[{gs}][{gs}], Blcl[{gs}][{gs}];
+      float acc = 0.0f;
+      for (int t=0; t<K/{gs}; t++) {{
+        Alcl[i][j] = A[bs*A_s0+m*A_s1+(t*{gs}+j)*A_s2+a_ofst];
+        Blcl[i][j] = B[bs*B_s0+(t*{gs}+i)*B_s1+n*B_s2+b_ofst];
+        barrier(CLK_LOCAL_MEM_FENCE);
+        for (int k=0; k<{gs}; k++) acc += Alcl[i][k] * Blcl[k][j];
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }}
+      C[bs*M*N+m*N+n] = acc;
+    }}"""
+    op = cl.build("matmul_op", src)
+    strides = [s for ss in zip(a.strides, b.strides) for s in ss]
+    args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
+    e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
+    if GRAPH: e.wait()
+    kernelstat.log("matmul")
+    return ret
+
+def reduce_op(op_info):
+    x = op_info.operands["A"]
+    agg = REDUCE_AGG_FN[op_info.operator]
+    pad = REDUCE_PAD_VAL[op_info.operator]
     x_shp = x.shape
-    if axis is None:
-        axis, x_shp = 0, (prod(x.shape),)
+    axis, keepdims = op_info.args["axis"], op_info.args["keepdims"]
+    if axis is None: axis, x_shp = 0, (prod(x.shape),)
     size = x_shp[axis]
 
     def cal_ret_shape(x_shp, axis, keepdims, grp_size, n_grps):
@@ -167,10 +168,10 @@ def reduce_op(name, x, axis=None, keepdims=True):
     max_work_group_size = cl.queue.device.max_work_group_size
     while grp_size != max_work_group_size and grp_size < size:
         grp_size *= 2
+
     n_grps = (size + grp_size - 1) // grp_size
     ret_shape = cal_ret_shape(x_shp, axis, keepdims, grp_size, n_grps)
     ret = x.__class__(shape=ret_shape, dtype=x.dtype)
-
     # merge non-target axes
     p1 = [prod(x_shp[:axis])] if axis!=0 else []
     p2 = [prod(x_shp[axis+1:])] if axis!=len(x_shp)-1 else []
@@ -191,11 +192,11 @@ def reduce_op(name, x, axis=None, keepdims=True):
         __global const float *inp, __local float *lcl, __global float *ret) {{
       {''.join([f'int gl_id_{i}=get_global_id({i});int gl_s_{i}=get_global_size({i});int grp_id_{i}=get_group_id({i});int grp_s_{i}=get_local_size({i});' for i in range(ndim)])}
       int lcl_id=get_local_id({axis});
-      lcl[lcl_id] = gl_id_{axis}<size?inp[{gl2lcl}-{offset}+ofst]:{padval_map[name]};
+      lcl[lcl_id] = gl_id_{axis}<size?inp[{gl2lcl}-{offset}+ofst]:{pad};
       barrier(CLK_LOCAL_MEM_FENCE);
       for (int stride=grp_s_{axis}>>1; stride>0; stride>>=1) {{
         float A = lcl[lcl_id], B = lcl[lcl_id+stride];
-        if (lcl_id<stride) lcl[lcl_id]={code_map[name]};
+        if (lcl_id<stride) lcl[lcl_id]={agg};
         barrier(CLK_LOCAL_MEM_FENCE);
       }}
       if (lcl_id == 0) ret[{lcl2gl}]=lcl[0];
@@ -206,17 +207,56 @@ def reduce_op(name, x, axis=None, keepdims=True):
     kernelstat.log("reduce")
     if GRAPH: e.wait()
     if DEBUG > 1: print(f"[DEBUG] x_shp: {x_shp} ret_shape: {ret_shape} grp_size: {grp_size} n_grps: {n_grps} size: {size} global_size: {global_size} local_size: {local_size} axis={axis} ndim={ndim} offset={offset}")
+
     if n_grps > 1:
-        ret = reduce_op(name, ret, axis=axis, keepdims=keepdims)
+        op_info = SimpleNamespace(operator=op_info.operator, operands={"A": ret}, args=dict(axis=axis, keepdims=keepdims))
+        ret = reduce_op(op_info)
     return ret
 
+def register_elemwise_op(func):
+    def resolve_operands(a, b):
+        if a.is_lazy and a.shape != b.shape:
+            for name, opd in b.op_info.operands.items():
+                b.op_info.operands[name] = Array.broadcast(b, opd)[1]
+        return b
+    def wrapper(*inputs, **kwargs):
+        if len(inputs) > 1:
+            inputs_ = Array.broadcast(*inputs)
+            inputs = [resolve_operands(a, b) for a, b in zip(inputs, inputs_)]
+        op = func(*inputs)
+        operands = dict(zip("AB", inputs))
+        code = ELEMWISE_MAPPING[op]
+        op_info = SimpleNamespace(operator=op, code=code, operands=operands, args=kwargs)
+        if not LAZY:
+            return elemwise_op(op_info)
+        return ClArray(shape=inputs[0].shape, dtype=inputs[0].dtype, op_info=op_info, is_lazy=True)
+    return wrapper
 
-class ClArray(Array):  #asd
+def register_reduce_op(func):
+    def wrapper(x, axis=None, keepdims=False):
+        x = x.contiguous(x) if not x.c_contiguous else x
+        op = func(x, axis=axis, keepdims=keepdims)
+        operands = {"A": x}
+        op_info = SimpleNamespace(operator=op, operands=operands, args=dict(axis=axis, keepdims=keepdims))
+        if not LAZY:
+            return reduce_op(op_info)
+        # infer ret_shape
+        ret_shape = () if axis is None else [d for i, d in enumerate(x.shape) if i != axis]
+        if keepdims: ret_shape.insert(axis, 1)
+        ret_shape = tuple(ret_shape)
+        return ClArray(shape=ret_shape, dtype=x.dtype, op_info=op_info, is_lazy=True)
+    return wrapper
+
+class ClArray(Array):
     """Pyopencl's multidimension array class only implement limited functionality. So we write our own."""
-    def __init__(self, data=None, shape=None, dtype=float32, lazy_info=None):
-        super().__init__(shape, dtype, lazy_info)
-        self.lazy_info = {"operator": None, "operands": {}} if lazy_info is None else lazy_info
-        self.node_info = {"outdegree": 0}
+    def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
+        super().__init__(shape, dtype, op_info)
+        self.op_info = SimpleNamespace(operator=None, operands={}) if op_info is None else op_info
+
+        self.outdegree = 0
+        self.is_visited = False
+        self.is_lazy = is_lazy
+
         if not self.is_lazy:
             if isinstance(data, pyopencl.Buffer):
                 self.buffer = data
@@ -235,14 +275,6 @@ class ClArray(Array):  #asd
         self._update_contiguousness()
 
     @property
-    def is_lazy(self):
-        return self.lazy_info.get("is_lazy", False)
-
-    @is_lazy.setter
-    def is_lazy(self, val):
-        self.lazy_info["is_lazy"] = val
-
-    @property
     def size(self):
         return self.buffer.size
 
@@ -253,194 +285,46 @@ class ClArray(Array):  #asd
     def numpy(self):
         arr = self.resolve() if self.is_lazy else self
         data = np.empty(arr.shape, dtype=arr.dtype)
-        cl.enqueue("copy", data, contiguous_op(arr).buffer, is_blocking=True)
+        op_info = SimpleNamespace(operator=ContiguousOps.CONTI, operands={"A": arr})
+        cl.enqueue("copy", data, contiguous_op(op_info).buffer, is_blocking=True)
         return data
 
-    # ##### Elementwise Ops #####
-    def neg(self):
-        if not LAZY: return elementwise_op("-A", {"A": self})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "-A"},
-                     "operands": {"A": self},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
-
-    def exp(self):
-        if not LAZY: return elementwise_op("exp(A)", {"A": self})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "exp(A)"},
-                     "operands": {"A": self},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
-
-    def log(self):
-        if not LAZY: return elementwise_op("log(A)", {"A": self})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "log(A)"},
-                     "operands": {"A": self},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
-
-    def relu(self):
-        if not LAZY: return elementwise_op("max(A,0.0f)", {"A": self})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "max(A,0.0f)"},
-                     "operands": {"A": self},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
-
-    def add(self, other, out=None):
-        a, b = Array.broadcast(self, other)
-        if not LAZY:
-            return elementwise_op("A+B", {"A": a, "B": b})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "A+B"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
-
-    def sub(self, other, out=None):
-        a, b = Array.broadcast(self, other)
-        if not LAZY:
-            return elementwise_op("A-B", {"A": a, "B": b})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "A-B"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
-
-    def div(self, other, out=None):
-        a, b = Array.broadcast(self, other)
-        if not LAZY:
-            return elementwise_op("A/B", {"A": a, "B": b})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "A/B"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
-
-    def mul(self, other, out=None):
-        a, b = Array.broadcast(self, other)
-        if not LAZY:
-            return elementwise_op("A*B", {"A": a, "B": b})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "A*B"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
-
-    def pow(self, other, out=None):
-        a, b = Array.broadcast(self, other)
-        if not LAZY:
-            return elementwise_op("pow(A,B)", {"A": a, "B": b})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "pow(A,B)"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
-
-    def matmul(self, other):
-        if not LAZY: return matmul_op(self, other)
-        a, b = self, other
-        a_shape = (1, *a.shape) if a.ndim == 1 else a.shape
-        b_shape = (*b.shape, 1) if b.ndim == 1 else b.shape
-        ret_shape = tuple((*(a_shape)[:-1], b_shape[-1]))
-        if a.ndim == 1 and ret_shape[0] == 1: ret_shape = ret_shape[1:]
-        if b.ndim == 1 and ret_shape[-1] == 1: ret_shape = ret_shape[:-1]
-        if not a.c_contiguous or a.f_contiguous: a = a.contiguous()
-        if not b.c_contiguous or b.f_contiguous: b = b.contiguous()
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "matmul"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=ret_shape, dtype=a.dtype, lazy_info=lazy_info)
-
-    def eq(self, other):
-        a, b = Array.broadcast(self, other)
-        if not LAZY:
-            return elementwise_op("(float)isequal(A,B)", {"A": a, "B": b})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "(float)isequal(A,B)"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
-
-    def ge(self, other):
-        a, b = Array.broadcast(self, other)
-        if not LAZY:
-            return elementwise_op("(float)isgreaterequal(A,B)", {"A": a, "B": b})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "(float)isgreaterequal(A,B)"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
-
-    def gt(self, other):
-        a, b = Array.broadcast(self, other)
-        if not LAZY:
-            return elementwise_op("(float)isgreater(A,B)", {"A": a, "B": b})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "(float)isgreater(A,B)"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
-
-    def drelu(self, other):
-        a, b = Array.broadcast(self, other)
-        if not LAZY:
-            return elementwise_op("B>0?A:0.0f", {"A": a, "B": b})
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "elementwise", "code": "B>0?A:0.0f"},
-                     "operands": {"A": a, "B": b},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=a.shape, dtype=a.dtype, lazy_info=lazy_info)
+    # ##### Elemwise Ops #####
+    for op in ("neg", "exp", "log", "relu"):
+        exec(f"@register_elemwise_op\ndef {op}(self, out=None): return ElemwiseOps.{op.upper()}")
+    for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt"):
+        exec(f"@register_elemwise_op\ndef {op}(self, other, out=None): return ElemwiseOps.{op.upper()}")
 
     # ##### Reduce Ops #####
-    def sum(self, axis=None, keepdims=False):
-        if not LAZY:
-            a = contiguous_op(self) if not self.c_contiguous else self
-            return reduce_op("sum", a, axis=axis, keepdims=keepdims)
-        a = self.contiguous() if not self.c_contiguous else self
-        operator = {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}}
-        ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
-        if keepdims: ret_shape.insert(axis, 1)
-        ret_shape = tuple(ret_shape)
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "reduce", "code": "sum", "args": {"axis": axis, "keepdims": keepdims}},
-                     "operands": {"A": a},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=ret_shape, dtype=self.dtype, lazy_info=lazy_info)
+    for op in ("sum", "max"):
+        exec(f"@register_reduce_op\ndef {op}(self, axis=None, keepdims=None): return ReduceOps.{op.upper()}")
 
-    def max(self, axis=None, keepdims=False):
+    # ##### Processing Ops #####
+    def matmul(self, other, out=None):
+        a, b = self, other
+        squeezes = []
+        if a.ndim == 1: a = a.reshape((1, *a.shape)); squeezes.append(0)
+        if b.ndim == 1: b = b.reshape((*b.shape, 1)); squeezes.append(-1)
+        ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
+
+        if a.ndim > 3: a = a.reshape((prod(a.shape[:-2]), *a.shape[2:]))
+        if b.ndim > 3: b = b.reshape((prod(b.shape[:-2]), *b.shape[2:]))
+        if a.ndim == 2: a = a.reshape((1, *a.shape))
+        if b.ndim == 2: b = b.reshape((1, *b.shape))
+        if a.shape[0] != b.shape[0]:
+            assert a.shape[0] == 1 or b.shape[0] == 1
+            if a.shape[0] == 1 and b.shape[0] != 1: a = a.expand((b.shape[0], *a.shape[1:]))
+            if b.shape[0] == 1 and a.shape[0] != 1: b = b.expand((a.shape[0], *b.shape[1:]))
+        assert a.shape[0] == b.shape[0] and a.shape[2] == b.shape[1], \
+                f"invalid shape for matmul {a.shape} @ {b.shape}"
+        operands = {"A": a, "B": b}
+        op_info = SimpleNamespace(operator=ProcessingOps.MATMUL, operands=operands, args={"out": out})
         if not LAZY:
-            a = contiguous_op(self) if not self.c_contiguous else self
-            return reduce_op("max", a, axis=axis, keepdims=keepdims)
-        a = self.contiguous() if not self.c_contiguous else self
-        operator = {"type": "reduce", "code": "max", "args": {"axis": axis, "keepdims": keepdims}}
-        ret_shape = () if axis is None else [d for i, d in enumerate(self.shape) if i != axis]
-        if keepdims: ret_shape.insert(axis, 1)
-        ret_shape = tuple(ret_shape)
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "reduce", "code": "max", "args": {"axis": axis, "keepdims": keepdims}},
-                     "operands": {"A": a},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=ret_shape, dtype=self.dtype, lazy_info=lazy_info)
+            return matmul_op(op_info)
+        ret = ClArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
+        for axis in squeezes:
+            ret = ret.squeeze(axis)
+        return ret
 
     # ##### View Ops #####
     def __getitem__(self, key):
@@ -553,38 +437,31 @@ class ClArray(Array):  #asd
 
     # ##### Special Ops ######
     def contiguous(self):
-        if not LAZY: return contiguous_op(self)
-        lazy_info = {"is_lazy": True,
-                     "operator": {"type": "contiguous"},
-                     "operands": {"A": self},
-                     "is_visited": False,
-                     "child": 0}
-        return ClArray(shape=self.shape, dtype=self.dtype, lazy_info=lazy_info)
+        # asd
+        op_info = SimpleNamespace(operator=ContiguousOps.CONTI, operands={"A": self})
+        if not LAZY:
+            return contiguous_op(op_info)
+        return ClArray(shape=self.shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
 
     # ##### Lazy #####
     @staticmethod
-    def _invoke(operator, operands):
-        # invoke the actual computation
-        if operator["type"] == "elementwise":
-            return elementwise_op(operator["code"], operands, **operator.get("args", {}))
-        elif operator["type"] == "reduce":
-            return reduce_op(operator["code"], *operands.values(), **operator.get("args", {}))
-        elif operator["type"] == "matmul":
-            return matmul_op(*operands.values(), **operator.get("args", {}))
-        elif operator["type"] == "contiguous":
-            return contiguous_op(*operands.values(), **operator.get("args", {}))
-        else:
-            raise ValueError(f"Invoke invalid operator {operator}")
+    def _invoke(op_info):
+        optype = type(op_info.operator)
+        if optype is ElemwiseOps: return elemwise_op(op_info)
+        elif optype is ReduceOps: return reduce_op(op_info)
+        elif optype is ProcessingOps: return matmul_op(op_info)
+        elif optype is ContiguousOps: return contiguous_op(op_info)
+        else: raise ValueError(f"Invoke invalid operator {op}")
 
     def resolve(self):
         def recursive_resolve(node=None):
             if node is None: node = self
-            info = node.lazy_info
-            for name, dep_node in info["operands"].items():
+            info = node.op_info
+            for name, dep_node in info.operands.items():
                 if dep_node.is_lazy:
                     dep_node.buffer = recursive_resolve(dep_node).buffer
                     dep_node.is_lazy = False
-            return self._invoke(info["operator"], info["operands"])
+            return self._invoke(info)
         graphoptimizer = GraphOptimizer(target_node=self)
         graphoptimizer.build()
         if GRAPH == 2: graphoptimizer.visualize("before")

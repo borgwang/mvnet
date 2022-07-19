@@ -10,7 +10,7 @@ def check_tensor(a, b, atol=0, rtol=1e-4):
     assert a.shape == b.shape
     assert np.allclose(a.numpy(), b, atol=atol, rtol=rtol, equal_nan=True)
 
-def test_lazy_unary():
+def test_lazy_elemwise():
     npa = np.array([[1, 2, 3]]).astype(np.float32)
     a = Tensor(npa, name="a").to("gpu")
     check_tensor(-a, -npa)
@@ -19,8 +19,6 @@ def test_lazy_unary():
     check_tensor(a.relu(), npa*(npa>0))
     check_tensor((a>0), (npa>0).astype(np.float32))
 
-def test_lazy_binary():
-    """
     np_w = np.array([[1, 2, 3]]).astype(np.float32)
     np_x = np.array([[3, 4, 5]]).astype(np.float32)
     np_b = np.array([[0, 1, 0]]).astype(np.float32)
@@ -51,7 +49,6 @@ def test_lazy_binary():
     y = b * (w + x) + b * (w - x)
     gt = np_b * (np_w + np_x) + np_b * (np_w - np_x)
     assert np.allclose(y.numpy(), gt)
-    """
 
     np_a = np.array([1]).astype(np.float32)
     np_b = np.array([3]).astype(np.float32)
@@ -59,8 +56,8 @@ def test_lazy_binary():
     a = Tensor(np_a, name="a").to("gpu")
     b = Tensor(np_b, name="b").to("gpu")
     c = Tensor(np_c, name="c").to("gpu")
-    y = (a + b) * c
-    gt = (np_a + np_b) * np_c
+    y = -((a + b) * c)
+    gt = -((np_a + np_b) * np_c)
     assert np.allclose(y.numpy(), gt)
 
 def test_lazy_forward():

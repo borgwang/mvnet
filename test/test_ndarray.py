@@ -81,8 +81,19 @@ def test_squeeze():
     arr = ClArray(nparr)
     check_array(arr.squeeze(), nparr.squeeze())
 
-def test_elementwise_op():
-    # TODO
+def test_elemwise_op():
+    # inplace
+    shape = (2, 4, 5)
+    nparr = rnd(shape)
+    nparr_copy = nparr.copy()
+    arr = ClArray(nparr)
+    arr += nparr_copy
+    nparr += nparr_copy
+    check_array(arr, nparr)
+    arr += 1
+    nparr += 1
+    check_array(arr, nparr)
+
     """
     shape = (2, 4, 5)
     nparr = rnd(shape)

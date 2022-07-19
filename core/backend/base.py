@@ -1,10 +1,28 @@
 from core.dtype import float32
 
+from enum import Enum
+
+ElemwiseOps = Enum("ElemwiseOps",
+    ["NEG", "EXP", "LOG", "RELU", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT", "DRELU"])
+ReduceOps = Enum("ReduceOps", ["SUM", "MAX"])
+ProcessingOps = Enum("ProcessingOps", ["MATMUL", "CONV"])
+ViewOps = Enum("ViewOps", ["SLICE", "RESHAPE", "PERMUTE", "EXPAND", "SQUEEZE"])
+ContiguousOps = Enum("ContiguousOps", ["CONTI"])
+CreationOps = Enum("CreationOps", ["EMPTY", "FULL", "UNIFORM", "NORMAL"])
+
 class Array:
-    def __init__(self, shape=None, dtype=float32, lazy_info=None):
-        self.lazy_info = lazy_info
+    for op in ("add", "sub", "mul", "div", "pow", "matmul"):
+        op_ = "truediv" if op is "div" else op
+        exec(f"def __{op_}__(self, other): return getattr(self, '{op}')(self.asarray(other))")
+        exec(f"def __i{op_}__(self, other): return getattr(self, '{op}')(self.asarray(other), out=self)")
+        exec(f"def __r{op_}__(self, other): return getattr(self.asarray(other), '{op}')(self)")
+    for op in ("eq", "ge", "gt"):
+        exec(f"def __{op}__(self, other): return getattr(self, '{op}')(self.asarray(other))")
+    exec(f"def __neg__(self): self.neg()")
+
+    def __init__(self, shape=None, dtype=float32, op_info=None):
+        self.op_info = op_info
         self.shape, self.dtype = shape, dtype
-        self.register_ops()
 
     def __repr__(self):
         clsname = self.__class__.__name__
@@ -64,22 +82,6 @@ class Array:
         ndim = min([arr.ndim for arr in arrs])
         retarrs = []
     """
-
-    @classmethod
-    def register_ops(cls):
-        for op in ("add", "sub", "mul", "div", "pow"):
-            opname = "truediv" if op is "div" else op
-            setattr(cls, f"__{opname}__", \
-                (lambda op: lambda a, b: getattr(a, op)(cls.asarray(b)))(op))
-            setattr(cls, f"__i{opname}__", \
-                (lambda op: lambda a, b: getattr(a, op)(cls.asarray(b), out=a))(op))
-            setattr(cls, f"__r{opname}__", \
-                (lambda op: lambda a, b: getattr(cls.asarray(b), op)(a))(op))
-        for op in ("eq", "ge", "gt"):
-            setattr(cls, f"__{op}__", \
-                (lambda op: lambda a, b: getattr(a, op)(cls.asarray(b)))(op))
-        setattr(cls, f"__matmul__", lambda a, b: a.matmul(cls.asarray(b)))
-        setattr(cls, f"__neg__", lambda a: a.neg())
 
     # ##### Unary Ops #####
     def neg(self): raise NotImplementedError
