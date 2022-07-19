@@ -3,11 +3,10 @@ from core.dtype import float32
 from enum import Enum
 
 ElemwiseOps = Enum("ElemwiseOps",
-    ["NEG", "EXP", "LOG", "RELU", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT", "DRELU"])
+    ["NEG", "EXP", "LOG", "RELU", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT", "DRELU", "NOOP"])
 ReduceOps = Enum("ReduceOps", ["SUM", "MAX"])
 ProcessingOps = Enum("ProcessingOps", ["MATMUL", "CONV"])
 ViewOps = Enum("ViewOps", ["SLICE", "RESHAPE", "PERMUTE", "EXPAND", "SQUEEZE"])
-ContiguousOps = Enum("ContiguousOps", ["CONTI"])
 CreationOps = Enum("CreationOps", ["EMPTY", "FULL", "UNIFORM", "NORMAL"])
 
 class Array:

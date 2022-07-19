@@ -6,7 +6,7 @@ import numpy as np
 import pyopencl
 
 from env import DEBUG, GRAPH, LAZY
-from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps, ContiguousOps
+from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
 from core.jit.graph import GraphOptimizer
 from core.dtype import int32, float32
 from utils.math import prod
@@ -17,7 +17,7 @@ ELEMWISE_MAPPING = {
     ElemwiseOps.RELU: "max(A,0.0f)", ElemwiseOps.ADD: "A+B", ElemwiseOps.SUB: "A-B",
     ElemwiseOps.DIV: "A/B", ElemwiseOps.MUL: "A*B", ElemwiseOps.POW: "pow(A,B)",
     ElemwiseOps.EQ: "(float)isequal(A,B)", ElemwiseOps.GE: "(float)isgreaterequal(A,B)",
-    ElemwiseOps.GT: "(float)isgreater(A,B)", ElemwiseOps.DRELU: "B>0?A:0.0f"
+    ElemwiseOps.GT: "(float)isgreater(A,B)", ElemwiseOps.DRELU: "B>0?A:0.0f", ElemwiseOps.NOOP: "A"
 }
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
@@ -83,30 +83,6 @@ def elemwise_op(op_info):
     args += [x.buffer for x in inp.values()]
     e = op((prod(a.shape),), None, *args, ret.buffer)
     kernelstat.log(ElemwiseOps)
-    if GRAPH: e.wait()
-    return ret
-
-def contiguous_op(op_info):
-    x = op_info.operands["A"]
-    ret = x.__class__(shape=x.shape, dtype=x.dtype)
-    x_ndim, x_shape, x_strides = x.ndim, x.shape, x.strides
-    if not x_ndim:
-        x_ndim, x_shape, x_strides = 1, (1,), (1,)
-    def_args = "".join([f"int a{i}, int b{i}, " for i in range(x_ndim)])
-    def_args += "int ofst"
-    def_strides = "".join([f"int _s{i}="+"*".join(f"a{j}" for j in range(i+1, x_ndim)) + ";" for i in range(x_ndim-1)])
-    def_strides += f"int _s{x_ndim-1}=1;"
-    def_indices = "".join(f"int _i{i}=curr/_s{i}; curr%=_s{i}; " for i in range(x_ndim))
-    addr = "+".join([f"b{i}*_i{i}" for i in range(x_ndim)])
-    src = f"""__kernel void contiguous_op({def_args}, __global const float *A, __global float *B) {{
-      int curr = get_global_id(0);
-      {def_strides} {def_indices}
-      B[get_global_id(0)] = A[{addr}+ofst];
-    }}"""
-    op = cl.build("contiguous_op", src)
-    args = [int32(s) for ss in zip(x_shape, x_strides) for s in ss]
-    e = op((prod(x_shape),), None, *args, int32(x.offset), x.buffer, ret.buffer)
-    kernelstat.log("contiguous")
     if GRAPH: e.wait()
     return ret
 
@@ -227,7 +203,7 @@ def register_elemwise_op(func):
         operands = dict(zip("AB", inputs))
         code = ELEMWISE_MAPPING[op]
         op_info = SimpleNamespace(operator=op, code=code, operands=operands, args=kwargs)
-        if not LAZY:
+        if not LAZY or kwargs.get("eager", False):
             return elemwise_op(op_info)
         return ClArray(shape=inputs[0].shape, dtype=inputs[0].dtype, op_info=op_info, is_lazy=True)
     return wrapper
@@ -285,8 +261,7 @@ class ClArray(Array):
     def numpy(self):
         arr = self.resolve() if self.is_lazy else self
         data = np.empty(arr.shape, dtype=arr.dtype)
-        op_info = SimpleNamespace(operator=ContiguousOps.CONTI, operands={"A": arr})
-        cl.enqueue("copy", data, contiguous_op(op_info).buffer, is_blocking=True)
+        cl.enqueue("copy", data, arr.contiguous(eager=True).buffer, is_blocking=True)
         return data
 
     # ##### Elemwise Ops #####
@@ -294,6 +269,10 @@ class ClArray(Array):
         exec(f"@register_elemwise_op\ndef {op}(self, out=None): return ElemwiseOps.{op.upper()}")
     for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt"):
         exec(f"@register_elemwise_op\ndef {op}(self, other, out=None): return ElemwiseOps.{op.upper()}")
+
+    @register_elemwise_op
+    def contiguous(self):
+        return ElemwiseOps.NOOP
 
     # ##### Reduce Ops #####
     for op in ("sum", "max"):
@@ -320,11 +299,13 @@ class ClArray(Array):
         operands = {"A": a, "B": b}
         op_info = SimpleNamespace(operator=ProcessingOps.MATMUL, operands=operands, args={"out": out})
         if not LAZY:
-            return matmul_op(op_info)
-        ret = ClArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
+            # TODO: bug when lazy=False
+            arr = matmul_op(op_info)
+        else:
+            arr = ClArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
         for axis in squeezes:
-            ret = ret.squeeze(axis)
-        return ret
+            arr = arr.squeeze(axis)
+        return arr
 
     # ##### View Ops #####
     def __getitem__(self, key):
@@ -434,14 +415,6 @@ class ClArray(Array):
     def normal(cls, loc, scale, shape, dtype=float32):
         buffer = cl.rng.normal(mu=loc, sigma=scale, shape=shape, dtype=dtype, cq=cl.queue).data
         return cls(data=buffer, shape=shape, dtype=dtype)
-
-    # ##### Special Ops ######
-    def contiguous(self):
-        # asd
-        op_info = SimpleNamespace(operator=ContiguousOps.CONTI, operands={"A": self})
-        if not LAZY:
-            return contiguous_op(op_info)
-        return ClArray(shape=self.shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
 
     # ##### Lazy #####
     @staticmethod

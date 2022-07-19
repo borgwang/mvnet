@@ -4,6 +4,7 @@ from env import GRAPH
 from utils.helper import timer, genname
 from utils.math import argsort
 
+#TODO: unify unary_ops and binary_ops
 def unary_ops(func):
     def wrapper(ts, *args, **kwargs):
         arr, grad_fn = func(ts.values, *args, **kwargs)
