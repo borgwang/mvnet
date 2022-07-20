@@ -5,7 +5,7 @@ import runtime_path  # isort:skip
 import numpy as np
 
 from core.tensor import Tensor
-from env import BACKEND
+from env import BACKEND, LAZY
 
 def test_add_op():
     devices = ("gpu", "cpu")
@@ -216,7 +216,7 @@ def test_slice():
 
 def test_minimal():
     np.random.seed(0)
-    n_epoch = 1
+    n_epoch = 10
 
     BS = 2**6
     idim = 2**8
@@ -249,9 +249,12 @@ def test_minimal():
             pred = x @ w + b
             loss = ((pred - y)**2).sum()
             loss.backward()
-
+            # gradient descent
             w -= 0.0001 * w.grad
             b -= 0.0001 * b.grad
+            if LAZY:
+                w.array = w.array.eager()
+                b.array = b.array.eager()
         assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)
         assert np.allclose(b.numpy(), b_final, rtol=1e-3)

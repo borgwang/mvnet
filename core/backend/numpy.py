@@ -21,7 +21,6 @@ class NpArray(Array):
     def neg(self, out=None): return self.asarray(np.negative(self.data))
     def exp(self, out=None): return self.asarray(np.exp(self.data))
     def log(self, out=None): return self.asarray(np.log(self.data))
-    def relu(self, out=None): return self.asarray(np.maximum(self.data, 0))
     def add(self, other, out=None): return self.asarray(self.data + other.data)
     def sub(self, other, out=None): return self.asarray(self.data - other.data)
     def div(self, other, out=None): return self.asarray(self.data / other.data)
@@ -31,7 +30,6 @@ class NpArray(Array):
     def ge(self, other, out=None): return self.asarray(self.data >= other.data)
     def gt(self, other, out=None): return self.asarray(self.data > other.data)
     def matmul(self, other): return self.asarray(self.data @ other.data)
-    def drelu(self, other): return self.asarray((other.data > 0) * self.data)
 
     # ##### Reduce Ops #####
     def sum(self, axis=None, keepdims=False):

@@ -6,22 +6,31 @@ from utils.helper import varnamegetter
 from core.backend.base import ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
 
 class GraphOptimizer:
-    def __init__(self, target_node):
-        assert target_node.is_lazy
-        self.target_node = target_node
+    def __init__(self, root):
+        assert root.is_lazy
+        self.root = root
         varnamegetter.reset()
 
     def build(self, node=None):
-        if node is None: node = self.target_node
-        # reset outdegree
-        for name, dep_node in node.op_info.operands.items():
-            dep_node.outdegree = 0
-            dep_node.is_visited = False
-            self.build(dep_node)
-        for name, dep_node in node.op_info.operands.items():
-            dep_node.outdegree += 1
-            self.build(dep_node)
-        return self
+        def _reset_visit(node):
+            for name, dep_node in node.op_info.operands.items():
+                dep_node.is_visited = False
+                _reset_visit(dep_node)
+        def _reset_outdegree(node):
+            for name, dep_node in node.op_info.operands.items():
+                dep_node.outdegree = 0
+                _reset_outdegree(dep_node)
+        def _build(node):
+            if node.is_visited: return
+            for name, dep_node in node.op_info.operands.items():
+                dep_node.outdegree += 1
+                _build(dep_node)
+                dep_node.is_visited = True
+
+        if node is None: node = self.root
+        _reset_outdegree(node)
+        _build(node)
+        _reset_visit(node)
 
     def _merge_elemwise(self, node):
         """element-wise ops (unary or binary) can be merged, thus reduce kernel calls. Consider the following computational graph.
@@ -38,8 +47,7 @@ class GraphOptimizer:
                     node.op_info.code = node.op_info.code.replace(name, new_name)
             else:
                 if not dep_node.is_visited: self._merge_elemwise(dep_node)
-                if type(operator) is ElemwiseOps and type(dep_node.op_info.operator) is ElemwiseOps and \
-                        dep_node.outdegree == 1:
+                if type(operator) is ElemwiseOps and type(dep_node.op_info.operator) is ElemwiseOps and dep_node.outdegree == 1:
                     operands.update(dep_node.op_info.operands)
                     experssion = f"({dep_node.op_info.code})"
                     node.op_info.code = node.op_info.code.replace(name, experssion)
@@ -58,7 +66,7 @@ class GraphOptimizer:
         pass
 
     def optimize(self):
-        if OPT1: self._merge_elemwise(node=self.target_node)
+        if OPT1: self._merge_elemwise(node=self.root)
 
     def visualize(self, suffix=""):
         color_map = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748"}
@@ -67,15 +75,12 @@ class GraphOptimizer:
             nid = id(node)
             if nid in G.nodes: return G
             G.add_node(nid)
+            G.nodes[nid]["shape"] = "box"
             G.nodes[nid]["label"] = f"{node.shape}\n{nid}"
             if hasattr(node.op_info, "code"):
                 G.nodes[nid]["label"] += f"\n{node.op_info.code}"
-            lazy = True
-            if node.is_lazy:
-                G.nodes[nid]["fillcolor"] = color_map[type(node.op_info.operator)]
-            else:
-                G.nodes[nid]["fillcolor"] = "#ffffff"; lazy = False
-            G.nodes[nid]["style"] = "filled, dashed" if not lazy else "filled"
+            G.nodes[nid]["fillcolor"] = color_map[type(node.op_info.operator)] if node.is_lazy else "#ffffff"
+            G.nodes[nid]["style"] = "filled, dashed" if node.is_lazy else "filled"
             for name, subnode in node.op_info.operands.items():
                 G = build_nx_graph(subnode, G)
                 edge = (id(subnode), nid)
@@ -83,7 +88,7 @@ class GraphOptimizer:
                     G.add_edge(*edge, cnt=1, label=name)
             return G
         G = nx.DiGraph()
-        G = build_nx_graph(self.target_node, G)
+        G = build_nx_graph(self.root, G)
         name = "net"
         if suffix: name += "_" + suffix
         nx.drawing.nx_pydot.write_dot(G, f"/tmp/{name}.dot")

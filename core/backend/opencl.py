@@ -12,14 +12,12 @@ from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, View
 from core.dtype import int32, float32
 from core.jit.graph import GraphOptimizer
 from utils.math import prod
-from utils.helper import varnamegetter, kernelstat
+from utils.helper import kernelstat
 
 ELEMWISE_MAPPING = {
-    ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)", ElemwiseOps.LOG: "log(A)",
-    ElemwiseOps.RELU: "max(A,0.0f)", ElemwiseOps.ADD: "A+B", ElemwiseOps.SUB: "A-B",
-    ElemwiseOps.DIV: "A/B", ElemwiseOps.MUL: "A*B", ElemwiseOps.POW: "pow(A,B)",
-    ElemwiseOps.EQ: "(float)isequal(A,B)", ElemwiseOps.GE: "(float)isgreaterequal(A,B)",
-    ElemwiseOps.GT: "(float)isgreater(A,B)", ElemwiseOps.NOOP: "A"
+    ElemwiseOps.NOOP: "A", ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)", ElemwiseOps.LOG: "log(A)",
+    ElemwiseOps.ADD: "A+B", ElemwiseOps.SUB: "A-B", ElemwiseOps.DIV: "A/B", ElemwiseOps.MUL: "A*B", ElemwiseOps.POW: "pow(A,B)",
+    ElemwiseOps.EQ: "(float)isequal(A,B)", ElemwiseOps.GE: "(float)isgreaterequal(A,B)", ElemwiseOps.GT: "(float)isgreater(A,B)"
 }
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
@@ -41,7 +39,7 @@ class ClContext:
         kernel = pyopencl.Program(self.ctx, program).build().__getattr__(name)
         return lambda *args: kernel(self.queue, *args)
 
-    def alloc_local_memory(self, size):
+    def alloc_local(self, size):
         return pyopencl.LocalMemory(size)
 
     def alloc_buffer(self, shape, dtype, hostbuf=None):
@@ -160,8 +158,7 @@ def reduce_op(op_info):
     lcl2gl = "+".join([f"{a_}*{c_}" for a_, c_ in zip(a, c)])
     # NOTE: calculate offset to get the proper global index
     offset = f"gl_id_0*{'0' if axis==0 else '1' if axis==ndim-1 else 'gl_s_2'}*(gl_s_{axis}-size)"
-    op = cl.build("reduce_op", f"""__kernel void reduce_op(int size, int ofst,
-        __global const float *inp, __local float *lcl, __global float *ret) {{
+    op = cl.build("reduce_op", f"""__kernel void reduce_op(int size, int ofst, __global const float *inp, __local float *lcl, __global float *ret) {{
       {''.join([f'int gl_id_{i}=get_global_id({i});int gl_s_{i}=get_global_size({i});int grp_id_{i}=get_group_id({i});int grp_s_{i}=get_local_size({i});' for i in range(ndim)])}
       int lcl_id=get_local_id({axis});
       lcl[lcl_id] = gl_id_{axis}<size?inp[{gl2lcl}-{offset}+ofst]:{pad};
@@ -173,7 +170,7 @@ def reduce_op(op_info):
       }}
       if (lcl_id == 0) ret[{lcl2gl}]=lcl[0];
     }}""")
-    local_mem = cl.alloc_local_memory(x.dtype().itemsize * grp_size)
+    local_mem = cl.alloc_local(x.dtype().itemsize * grp_size)
     local_size = tuple(grp_size if i == axis else 1 for i in range(ndim))
     e = op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
     kernelstat.log(op_info.operator)
@@ -186,20 +183,20 @@ def reduce_op(op_info):
     return ret
 
 def register_elemwise_op(func):
-    def resolve_operands(a, b):
+    def broadcast_operands(a, b):
         if a.is_lazy and a.shape != b.shape:
-            for name, opd in b.op_info.operands.items():
-                b.op_info.operands[name] = Array.broadcast(b, opd)[1]
+            b, *opds = Array.broadcast(b, *b.op_info.operands.values())
+            b.op_info.operands = dict(zip(b.op_info.operands.keys(), opds))
         return b
     def wrapper(*inputs, **kwargs):
         if len(inputs) > 1:
             inputs_ = Array.broadcast(*inputs)
-            inputs = [resolve_operands(a, b) for a, b in zip(inputs, inputs_)]
+            inputs = [broadcast_operands(a, b) for a, b in zip(inputs, inputs_)]
         op = func(*inputs)
         code = ELEMWISE_MAPPING[op]
         op_info = SimpleNamespace(operator=op, code=code, operands=dict(zip("AB", inputs)), args=kwargs)
-        if not LAZY or kwargs.get("eager", False):
-            return elemwise_op(op_info)
+        if not LAZY or kwargs.get("eager", False):  # NOTE: for numpy() call
+            return ClArray._invoke(op_info)
         return ClArray(shape=inputs[0].shape, dtype=inputs[0].dtype, op_info=op_info, is_lazy=True)
     return wrapper
 
@@ -209,15 +206,14 @@ def register_reduce_op(func):
         op = func(x, axis=axis, keepdims=keepdims)
         op_info = SimpleNamespace(operator=op, operands={"A": x}, args=dict(axis=axis, keepdims=keepdims))
         if not LAZY:
-            return reduce_op(op_info)
+            return ClArray._invoke(op_info)
         ret_shape = () if axis is None else [d for i, d in enumerate(x.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
-        ret_shape = tuple(ret_shape)
-        return ClArray(shape=ret_shape, dtype=x.dtype, op_info=op_info, is_lazy=True)
+        return ClArray(shape=tuple(ret_shape), dtype=x.dtype, op_info=op_info, is_lazy=True)
     return wrapper
 
+
 class ClArray(Array):
-    """Pyopencl's multidimension array class only implement limited functionality. So we write our own."""
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
         super().__init__(shape, dtype, op_info, is_lazy)
         self.op_info = SimpleNamespace(operator=None, operands={}) if op_info is None else op_info
@@ -227,13 +223,12 @@ class ClArray(Array):
         if not self.is_lazy:
             if isinstance(data, pyopencl.Buffer):
                 self.buffer = data
-                assert self.shape is not None, "cannot infer shape when initialize using clbuffer"
+                assert self.shape is not None, "Can not infer shape when initialize using clbuffer"
             else:
                 if data is not None:
                     data = np.asarray(data, dtype=self.dtype)
                     self.shape = data.shape
-                else:
-                    assert self.shape is not None, "cannot infer shape when without data"
+                assert self.shape is not None, "Array shape is None!"
                 self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(len(self.shape)))
@@ -250,13 +245,13 @@ class ClArray(Array):
         return len(self.shape)
 
     def numpy(self):
-        arr = self.resolve() if self.is_lazy else self
+        arr = self.eager() if self.is_lazy else self
         data = np.empty(arr.shape, dtype=arr.dtype)
         cl.enqueue("copy", data, arr.contiguous(eager=True).buffer, is_blocking=True)
         return data
 
     # ##### Elemwise Ops #####
-    for op in ("neg", "exp", "log", "relu"):
+    for op in ("neg", "exp", "log"):
         exec(f"@register_elemwise_op\ndef {op}(self, out=None): return ElemwiseOps.{op.upper()}")
     for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt"):
         exec(f"@register_elemwise_op\ndef {op}(self, other, out=None): return ElemwiseOps.{op.upper()}")
@@ -287,7 +282,7 @@ class ClArray(Array):
         operands = {"A": a, "B": b}
         args = {"out": out}
         op_info = SimpleNamespace(operator=ProcessingOps.MATMUL, operands=operands, args=args, ret_shape=ret_shape)
-        arr = matmul_op(op_info) if not LAZY else ClArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
+        arr = self._invoke(op_info) if not LAZY else ClArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
         for axis in squeezes:
             arr = arr.squeeze(axis)
         return arr
@@ -410,22 +405,26 @@ class ClArray(Array):
         elif optype is ContiguousOps: return contiguous_op(op_info)
         else: raise ValueError(f"Invoke invalid operator {op}")
 
-    def resolve(self):
-        def recursive_resolve(node=None):
+    def eager(self):
+        # will modify array in place (lazy -> eager)
+        def recursive_eager(node=None):
             if node is None: node = self
             info = node.op_info
             for name, dep_node in info.operands.items():
                 if dep_node.is_lazy:
-                    dep_node.buffer = recursive_resolve(dep_node).buffer
+                    dep_node.buffer = recursive_eager(dep_node).buffer
                     dep_node.is_lazy = False
+                    # TODO: should or should not earse?
+                    dep_node.op_info = SimpleNamespace(operator=None, operands={})
             return self._invoke(info)
-        graphoptimizer = GraphOptimizer(target_node=self)
+        graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer.build()
         if GRAPH: graphoptimizer.visualize()
         graphoptimizer.optimize()
         if GRAPH: graphoptimizer.visualize("opt")
-        self.buffer = recursive_resolve().buffer
+        self.buffer = recursive_eager().buffer
         self.is_lazy = False
+        self.op_info = SimpleNamespace(operator=None, operands={})
         return self
 
     def _update_contiguousness(self):

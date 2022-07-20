@@ -1,5 +1,3 @@
-"""Example code for MNIST. A fully-connected network and a convolutional neural network were implemented."""
-
 import runtime_path  # isort:skip
 
 import argparse
@@ -14,12 +12,11 @@ import numpy as np
 from core.nn.net import SequentialNet
 from core.nn.layers import Dense, ReLU
 from core.nn.loss import SoftmaxCrossEntropyLoss
-from core.nn.optimizer import Adam
+from core.nn.optimizer import Adam, SGD
 from core.tensor import Tensor
 from utils.data_iterator import BatchIterator
 from utils.downloader import download_url
 from utils.evaluator import AccEvaluator
-from utils.helper import get_tensor_graph
 from env import DEBUG, GRAPH, LAZY
 
 def get_one_hot(targets, nb_classes):
@@ -56,11 +53,6 @@ def main(args):
             Dense(64), ReLU(),
             Dense(32), ReLU(),
             Dense(10)).to(args.device)
-    """
-    net = SequentialNet(
-            Dense(256), ReLU(),
-            Dense(10)).to(args.device)
-    """
     optim = Adam(net.get_parameters(), lr=args.lr)
     loss_fn = SoftmaxCrossEntropyLoss()
 
@@ -73,10 +65,8 @@ def main(args):
             x, y = batch.inputs.to(args.device), batch.targets.to(args.device)
             pred = net.forward(x)
             loss = loss_fn(pred, y)
-            loss.numpy()
-            import pdb; pdb.set_trace()
-            #loss.backward()
-            #optim.step()
+            loss.backward()
+            optim.step()
             if args.onepass: sys.exit()
         print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))
         if args.eval:

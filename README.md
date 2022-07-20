@@ -6,24 +6,21 @@ mvnet is a small but fully functional deep learning framework built on top of [t
 - automatic differentiation
 - support numpy/opencl backends
 
-### jit
-- [x] rename variable in the experssion
-- rules of node merge
-  - [x] merge inplace ops
-- [] support unary ops
-- [] backward?
-
 ### TODOs
 - ops
   - conv/tconv op
   - slice op
 - unit testing
 - speedup
-  - ops optimization
-  - jit
+  - kernel-level optimization
+  - graph-level optimization
 - backend
   - support cuda backend
-- readability
+
+### Laziness
+
+- A lazy node attributes: shape, strides, operator, operands, extra args
+- Recursive invoke the computation when we call eager on a lazy node
 
 ### License
 

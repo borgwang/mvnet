@@ -62,10 +62,17 @@ class Tensor:
     def shape(self):
         return self.array.shape
 
+    @property
+    def ndim(self):
+        return self.array.ndim
+
+    def __len__(self):
+        assert self.shape, "Error getting length of a 0-d tensor"
+        return self.shape[0]
+
     def __repr__(self):
-        return (f"Tensor(name={self.name}, shape={self.shape}, "
-                f"requires_grad={self.requires_grad}, "
-                f"gpu={self._gpu}, array={self.array.__class__.__name__})")
+        return (f"<Tensor name={self.name}  shape={self.shape} requires_grad={self.requires_grad} "
+                f"gpu={self._gpu} array={self.array.__class__.__name__}>")
 
     for op in ("add", "sub", "mul", "div", "pow", "matmul"):
         op_ = "truediv" if op == "div" else op
@@ -76,7 +83,8 @@ class Tensor:
     for op in ("eq", "ge", "gt"):
         exec(f"def __{op}__(self, other): return ops.{op}(self, self.astensor(other))")
 
-    exec(f"def __neg__(self): return ops.neg(self)")
+    for op in ("neg", "getitem"):
+        exec(f"def __{op}__(self, *args, **kwargs): return ops.{op}(self, *args, **kwargs)")
 
     for op in ("sum", "max", "log", "exp", "relu", "reshape", "flatten", "permute"):
         exec(f"def {op}(self, *args, **kwargs): return ops.{op}(self, *args, **kwargs)")
@@ -84,17 +92,6 @@ class Tensor:
     @property
     def T(self):
         return ops.permute(self, axes=None)
-
-    def __getitem__(self, key):
-        return ops.getitem(self, key)
-
-    def __len__(self):
-        assert self.shape, "Error getting length of a 0-d tensor"
-        return self.shape[0]
-
-    @property
-    def ndim(self):
-        return len(self.shape)
 
     def backward(self, grad=None):
         assert self.requires_grad, "Call backward() on a non-requires-grad tensor."

@@ -3,7 +3,7 @@ from core.dtype import float32
 from enum import Enum
 
 ElemwiseOps = Enum("ElemwiseOps",
-    ["NEG", "EXP", "LOG", "RELU", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT" , "NOOP"])
+    ["NEG", "EXP", "LOG", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT" , "NOOP"])
 ReduceOps = Enum("ReduceOps", ["SUM", "MAX"])
 ProcessingOps = Enum("ProcessingOps", ["MATMUL", "CONV"])
 ViewOps = Enum("ViewOps", ["SLICE", "RESHAPE", "PERMUTE", "EXPAND", "SQUEEZE"])
@@ -50,41 +50,24 @@ class Array:
         raise NotImplementedError
 
     @staticmethod
-    def broadcast(a, b):
+    def broadcast(*arrs):
         # rule: https://numpy.org/doc/stable/user/basics.broadcasting.html
-        if a.shape == b.shape:
-            return a, b
-        for i, j in zip(a.shape[::-1], b.shape[::-1]):
-            if i != j and (i != 1) and (j != 1):
-                raise ValueError(f"Error broadcasting for {a.shape} and {b.shape}")
-        ndim = max(a.ndim, b.ndim)
-        if a.ndim != ndim:
-            a = a.reshape([1] * (ndim - a.ndim) + list(a.shape))
-        if b.ndim != ndim:
-            b = b.reshape([1] * (ndim - b.ndim) + list(b.shape))
-        broadcast_shape = tuple([max(i, j) for i, j in zip(a.shape, b.shape)])
-        if a.shape != broadcast_shape:
-            a = a.expand(broadcast_shape)
-        if b.shape != broadcast_shape:
-            b = b.expand(broadcast_shape)
-        return a, b
-
-    """
-    def broadcast2(*arrs):
         if len(set([arr.shape for arr in arrs])) == 1:
             return arrs
-        reveted_shapes = [arr.shape[::-1] for arr in arrs])
+        reverted_shapes = [arr.shape[::-1] for arr in arrs]
         min_ndim = min([arr.ndim for arr in arrs])
         for i in range(min_ndim):
-            unique = [shape[i] for shape in reverted_shapes]
-            if set(unique) > 2 or (set(unique) == 2 and 1 not in unique):
+            unique = set([shape[i] for shape in reverted_shapes])
+            if len(unique) > 2 or (len(unique) == 2 and 1 not in unique):
                 raise ValueError(f"Error broadcasting for {arrs}")
-        ndim = min([arr.ndim for arr in arrs])
-        retarrs = []
-    """
+        ndim = max([arr.ndim for arr in arrs])
+        arrs = [a.reshape([1] * (ndim - a.ndim) + list(a.shape)) if a.ndim != ndim else a for a in arrs]
+        broadcast_shape = tuple([max(*s) for s in zip(*[a.shape for a in arrs])])
+        arrs = [a.expand(broadcast_shape) if a.shape != broadcast_shape else a for a in arrs]
+        return arrs
 
     # ##### Elemwise Ops #####
-    for op in ("neg", "exp", "log", "relu"):
+    for op in ("neg", "exp", "log"):
         exec(f"def {op}(self, out=None): raise NotImplementedError")
     for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt"):
         exec(f"def {op}(self, other, out=None): raise NotImplementedError")

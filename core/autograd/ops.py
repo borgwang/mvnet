@@ -57,17 +57,17 @@ def mul(arr1, arr2):
 
 @autograd_ops
 def div(arr1, arr2):
-    res = arr1 / arr2
+    result = arr1 / arr2
     grad_fn1 = lambda g: g / arr2
-    grad_fn2 = lambda g: -g * res / arr2
-    return res, grad_fn1, grad_fn2
+    grad_fn2 = lambda g: -g * result / arr2
+    return result, grad_fn1, grad_fn2
 
 @autograd_ops
 def pow(arr1, arr2):
-    res = arr1 ** arr2
+    result = arr1 ** arr2
     grad_fn1 = lambda g: g * (arr2 * arr1**(arr2 - 1.0))
-    grad_fn2 = lambda g: g * (res * arr1.log())
-    return res, grad_fn1, grad_fn2
+    grad_fn2 = lambda g: g * (result * arr1.log())
+    return result, grad_fn1, grad_fn2
 
 @autograd_ops
 def matmul(arr1, arr2):
@@ -89,7 +89,7 @@ def ge(arr1, arr2):
 
 @autograd_ops
 def sum(arr, axis=None, keepdims=False):
-    res = arr.sum(axis=axis, keepdims=keepdims)
+    result = arr.sum(axis=axis, keepdims=keepdims)
     def grad_fn(g):
         shape = arr.shape
         if axis is None:
@@ -98,19 +98,19 @@ def sum(arr, axis=None, keepdims=False):
         if not keepdims:
             g = g.reshape((*shape[:axis], 1, *shape[axis+1:]))
         return g.expand(shape)
-    return res, grad_fn
+    return result, grad_fn
 
 @autograd_ops
 def max(arr, axis=None, keepdims=False):
-    res = arr.max(axis=axis, keepdims=keepdims)
-    grad_fn = lambda g: g * (res == arr)
-    return res, grad_fn
+    result = arr.max(axis=axis, keepdims=keepdims)
+    grad_fn = lambda g: g * (result == arr)
+    return result, grad_fn
 
 @autograd_ops
 def min(arr, axis, keepdims):
-    res = arr.min(axis=axis, keepdims=keepdims)
-    grad_fn = lambda g: g * (res == arr)
-    return res, grad_fn
+    result = arr.min(axis=axis, keepdims=keepdims)
+    grad_fn = lambda g: g * (result == arr)
+    return result, grad_fn
 
 @autograd_ops
 def neg(arr):
@@ -119,43 +119,44 @@ def neg(arr):
 
 @autograd_ops
 def exp(arr):
-    res = arr.exp()
-    grad_fn = lambda g: g * res
-    return res, grad_fn
+    result = arr.exp()
+    grad_fn = lambda g: g * result
+    return result, grad_fn
 
 @autograd_ops
 def log(arr):
-    res = arr.log()
+    result = arr.log()
     grad_fn = lambda g: g / arr
-    return res, grad_fn
+    return result, grad_fn
 
 @autograd_ops
 def relu(arr):
-    res = arr.relu()
-    grad_fn = lambda g: g * (arr > 0)
-    return res, grad_fn
+    mask = arr > 0
+    result = mask * arr
+    grad_fn = lambda g: mask * g
+    return mask * arr, grad_fn
 
 @autograd_ops
 def reshape(arr, shape):
-    res = arr.reshape(shape)
+    result = arr.reshape(shape)
     grad_fn = lambda g: g.reshape(arr.shape)
-    return res, grad_fn
+    return result, grad_fn
 
 @autograd_ops
 def permute(arr, axes=None):
     if axes is None:
         axes = range(arr.ndim)[::-1]
     axes = list(axes)
-    res = arr.permute(axes)
+    result = arr.permute(axes)
     grad_fn = lambda g: g.permute(argsort(axes))
-    return res, grad_fn
+    return result, grad_fn
 
 @autograd_ops
 def getitem(arr, key):
-    res = arr[key]
+    result = arr[key]
     def grad_fn(g):
         ret = g.__class__.zeros(arr.shape)
         ret[key] = g  # TODO
         return ret
-    return res, grad_fn
+    return result, grad_fn
 
