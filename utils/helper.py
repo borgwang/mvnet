@@ -34,31 +34,6 @@ class VarNameGetter:
 
 varnamegetter = VarNameGetter()
 
-# tensor graph (high level)
-def get_tensor_graph(start):
-    def build_graph(node, G):
-        if id(node) in G.nodes:
-            return G
-        G.add_node(id(node))
-        G.nodes[id(node)]["label"] = f"{node.shape}\n{id(node.array)}"
-        for dep in node.dependency:
-            subnode = dep["tensor"]
-            G = build_graph(subnode, G)
-            edge = (id(subnode), id(node))
-            if edge in G.edges:
-                cnt = nx.get_edge_attributes(G, "cnt")[edge]["cnt"]
-                nx.set_edge_attributes(G, {edge: {"cnt": cnt+1}})
-            else:
-                opname = node.name.split("_")[0]
-                G.add_edge(*edge, cnt=1, label=opname)
-        return G
-    G = nx.DiGraph()
-    G = build_graph(start, G)
-    mode = "tensor"
-    nx.drawing.nx_pydot.write_dot(G, f"/tmp/{mode}.dot")
-    os.system(f"dot -Tsvg /tmp/{mode}.dot -o /tmp/{mode}.svg")
-    print(f"[GRAPH] save to /tmp/{mode}.svg")
-
 class KernelStat:
     def __init__(self):
         self.reset()

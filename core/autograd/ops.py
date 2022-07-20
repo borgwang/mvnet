@@ -22,7 +22,7 @@ def autograd_ops(func):
     def wrapper(*args, **kwargs):
         from core.tensor import Tensor
         tss = [a for a in args if isinstance(a, Tensor)]
-        arr, *grad_fns = func(*[ts.values for ts in tss], *args[len(tss):], **kwargs)
+        arr, *grad_fns = func(*[ts.array for ts in tss], *args[len(tss):], **kwargs)
         grad_fns = [unbroadcast(grad_fn, ts.shape) for ts, grad_fn in zip(tss, grad_fns)]
         requires_grad = False
         for ts, grad_fn in zip(tss, grad_fns):
@@ -101,7 +101,7 @@ def sum(arr, axis=None, keepdims=False):
     return res, grad_fn
 
 @autograd_ops
-def max(arr, axis, keepdims):
+def max(arr, axis=None, keepdims=False):
     res = arr.max(axis=axis, keepdims=keepdims)
     grad_fn = lambda g: g * (res == arr)
     return res, grad_fn
@@ -132,7 +132,7 @@ def log(arr):
 @autograd_ops
 def relu(arr):
     res = arr.relu()
-    grad_fn = lambda g: g.drelu(arr)
+    grad_fn = lambda g: g * (arr > 0)
     return res, grad_fn
 
 @autograd_ops
@@ -159,19 +159,3 @@ def getitem(arr, key):
         return ret
     return res, grad_fn
 
-## TODO: implement ops below
-#def pad_(ts, pad_width, mode):
-#    values = np.pad(ts.values, pad_width=pad_width, mode=mode)
-#    slices = list()
-#    for size, (before, after) in zip(values.shape, pad_width):
-#        slices.append(slice(before, size-after))
-#    def grad_fn(grad):
-#        return grad[tuple(slices)]
-#    return build_unary_ops_tensor(ts, grad_fn, values)
-#
-#def flatten_(ts):
-#    shape = ts.shape
-#    values = ts.values.ravel()
-#    def grad_fn(grad):
-#        return grad.reshape(shape)
-#    return build_unary_ops_tensor(ts, grad_fn, values)

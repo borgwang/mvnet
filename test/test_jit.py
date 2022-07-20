@@ -4,8 +4,10 @@ import numpy as np
 
 from env import LAZY, GRAPH, OPT1
 from core.tensor import Tensor
-from utils.helper import get_tensor_graph, get_array_graph, kernelstat
+from utils.helper import kernelstat
 from core.backend.base import ElemwiseOps, ReduceOps, ProcessingOps, ViewOps, CreationOps
+
+np.random.seed(0)
 
 def check_tensor(a, b, atol=0, rtol=1e-4):
     assert a.shape == b.shape
@@ -139,11 +141,17 @@ def test_lazy_backward():
     b = Tensor(b_np, requires_grad=True, name="b").to(device)
     w.zero_grad(); b.zero_grad()
 
-    pred = x @ w + b
-    cost = (pred - y) ** 2
-    loss = cost.sum()
+    pred = (x @ w + b).relu()
+    loss = ((pred - y)**2).sum()
+    loss.backward()
 
-    loss.backward() # TODO: trigger the actual computation duration training
+    pred_np_ = (x_np @ w_np + b_np)
+    pred_np = pred_np_ * (pred_np_ > 0)
+    loss_np = ((pred_np - y_np) ** 2).sum()
+
+    w_grad = w.grad.numpy()
+    w_grad_np = (x_np.T @ (2 * (pred_np - y_np) * (pred_np_ > 0)))
+    assert np.allclose(w_grad, w_grad_np, atol=1e-2)
 
 def test_graph_optimizer():
     BS = 64

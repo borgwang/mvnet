@@ -60,7 +60,7 @@ class GraphOptimizer:
     def optimize(self):
         if OPT1: self._merge_elemwise(node=self.target_node)
 
-    def visualize(self, prefix=""):
+    def visualize(self, suffix=""):
         color_map = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748"}
         def build_nx_graph(node, G):
             if node is None: return G
@@ -84,8 +84,9 @@ class GraphOptimizer:
             return G
         G = nx.DiGraph()
         G = build_nx_graph(self.target_node, G)
-        mode = prefix + "_array"
-        nx.drawing.nx_pydot.write_dot(G, f"/tmp/{mode}.dot")
-        os.system(f"dot -Tsvg /tmp/{mode}.dot -o /tmp/{mode}.svg")
-        print(f"[GRAPH] save to /tmp/{mode}.svg")
+        name = "net"
+        if suffix: name += "_" + suffix
+        nx.drawing.nx_pydot.write_dot(G, f"/tmp/{name}.dot")
+        os.system(f"dot -Tsvg /tmp/{name}.dot -o /tmp/{name}.svg")
+        print(f"[GRAPH] save to /tmp/{name}.svg")
 

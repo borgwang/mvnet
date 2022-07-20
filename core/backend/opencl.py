@@ -1,14 +1,16 @@
-from types import SimpleNamespace
-from functools import lru_cache
 import copy
 from collections import defaultdict
+from functools import lru_cache
+from types import SimpleNamespace
+
 import numpy as np
 import pyopencl
+import pyopencl.clrandom as clrandom
 
 from env import DEBUG, GRAPH, LAZY
 from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
-from core.jit.graph import GraphOptimizer
 from core.dtype import int32, float32
+from core.jit.graph import GraphOptimizer
 from utils.math import prod
 from utils.helper import varnamegetter, kernelstat
 
@@ -17,7 +19,7 @@ ELEMWISE_MAPPING = {
     ElemwiseOps.RELU: "max(A,0.0f)", ElemwiseOps.ADD: "A+B", ElemwiseOps.SUB: "A-B",
     ElemwiseOps.DIV: "A/B", ElemwiseOps.MUL: "A*B", ElemwiseOps.POW: "pow(A,B)",
     ElemwiseOps.EQ: "(float)isequal(A,B)", ElemwiseOps.GE: "(float)isgreaterequal(A,B)",
-    ElemwiseOps.GT: "(float)isgreater(A,B)", ElemwiseOps.DRELU: "B>0?A:0.0f", ElemwiseOps.NOOP: "A"
+    ElemwiseOps.GT: "(float)isgreater(A,B)", ElemwiseOps.NOOP: "A"
 }
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
@@ -31,7 +33,6 @@ class ClContext:
             devices = platform.get_devices(device_type=pyopencl.device_type.CPU)
         self.ctx = pyopencl.Context(devices)
         self.queue = pyopencl.CommandQueue(self.ctx)
-        import pyopencl.clrandom as clrandom
         self.rng = clrandom.PhiloxGenerator(self.ctx, seed=0)
 
     @lru_cache(maxsize=None)
@@ -209,7 +210,6 @@ def register_reduce_op(func):
         op_info = SimpleNamespace(operator=op, operands={"A": x}, args=dict(axis=axis, keepdims=keepdims))
         if not LAZY:
             return reduce_op(op_info)
-        # infer ret_shape
         ret_shape = () if axis is None else [d for i, d in enumerate(x.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
         ret_shape = tuple(ret_shape)
@@ -219,12 +219,10 @@ def register_reduce_op(func):
 class ClArray(Array):
     """Pyopencl's multidimension array class only implement limited functionality. So we write our own."""
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
-        super().__init__(shape, dtype, op_info)
+        super().__init__(shape, dtype, op_info, is_lazy)
         self.op_info = SimpleNamespace(operator=None, operands={}) if op_info is None else op_info
-
         self.outdegree = 0
         self.is_visited = False
-        self.is_lazy = is_lazy
 
         if not self.is_lazy:
             if isinstance(data, pyopencl.Buffer):
@@ -262,14 +260,11 @@ class ClArray(Array):
         exec(f"@register_elemwise_op\ndef {op}(self, out=None): return ElemwiseOps.{op.upper()}")
     for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt"):
         exec(f"@register_elemwise_op\ndef {op}(self, other, out=None): return ElemwiseOps.{op.upper()}")
-
-    @register_elemwise_op
-    def contiguous(self):
-        return ElemwiseOps.NOOP
+    exec(f"@register_elemwise_op\ndef contiguous(self): return ElemwiseOps.NOOP")
 
     # ##### Reduce Ops #####
     for op in ("sum", "max"):
-        exec(f"@register_reduce_op\ndef {op}(self, axis=None, keepdims=None): return ReduceOps.{op.upper()}")
+        exec(f"@register_reduce_op\ndef {op}(self, axis=None, keepdims=False): return ReduceOps.{op.upper()}")
 
     # ##### Processing Ops #####
     def matmul(self, other, out=None):
@@ -385,7 +380,6 @@ class ClArray(Array):
         return inst
 
     # ##### Creation Ops #####
-    # TODO: lazy creation
     @classmethod
     def empty(cls, shape, dtype=float32):
         return cls(shape=shape, dtype=dtype)
@@ -427,9 +421,9 @@ class ClArray(Array):
             return self._invoke(info)
         graphoptimizer = GraphOptimizer(target_node=self)
         graphoptimizer.build()
-        if GRAPH == 2: graphoptimizer.visualize("before")
+        if GRAPH: graphoptimizer.visualize()
         graphoptimizer.optimize()
-        if GRAPH == 2: graphoptimizer.visualize("after")
+        if GRAPH: graphoptimizer.visualize("opt")
         self.buffer = recursive_resolve().buffer
         self.is_lazy = False
         return self

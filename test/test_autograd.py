@@ -165,7 +165,7 @@ def test_reshape_ops():
 def test_slice():
     devices = ("gpu", "cpu")
     for device in devices:
-        data = np.arange(24).reshape((2, 3, 4)).astype(np.float32)
+        data = np.arange(1, 25).reshape((2, 3, 4)).astype(np.float32)
         t1 = Tensor(data, requires_grad=True).to(device)
         for s in ((1,),
                   (1, 2),
@@ -180,7 +180,6 @@ def test_slice():
             t2 = t1[s]
             assert t2.shape == data[s].shape
             assert np.allclose(t2.numpy(), data[s])
-            #assert t1.values.buffer == t2.values.buffer
             # unary ops
             assert np.allclose(t2.exp().numpy(), np.exp(data[s]))
             assert np.allclose(t2.log().numpy(), np.log(data[s]))
@@ -253,7 +252,7 @@ def test_minimal():
 
             w -= 0.0001 * w.grad
             b -= 0.0001 * b.grad
-        #assert np.allclose(loss.values.numpy(), loss_final, rtol=1e-3)
+        assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)
-        #assert np.allclose(b.numpy(), b_final, rtol=1e-3)
+        assert np.allclose(b.numpy(), b_final, rtol=1e-3)
 

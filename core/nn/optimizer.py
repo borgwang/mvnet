@@ -11,7 +11,7 @@ class Optimizer:
         self.t += 1
         for i, param in enumerate(self.params):
             for name in param:
-                param[name].values += self._get_step(param[name].grad, key=f"{i}-{name}")
+                param[name].array += self._get_step(param[name].grad, key=f"{i}-{name}")
 
     def _get_step(self, grad):
         raise NotImplementedError

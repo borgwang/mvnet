@@ -11,9 +11,9 @@ elif BACKEND == "cuda":
     from core.backend.cuda import CuArray as GPUArray
 
 class Tensor:
-    def __init__(self, values, requires_grad=False, dependency=(), dtype=float32, name=None):
-        self._gpu = isinstance(values, GPUArray)
-        self.array = values if isinstance(values, (CPUArray, GPUArray)) else CPUArray(values, dtype=dtype)
+    def __init__(self, array, requires_grad=False, dependency=(), dtype=float32, name=None):
+        self._gpu = isinstance(array, GPUArray)
+        self.array = array if isinstance(array, (CPUArray, GPUArray)) else CPUArray(array, dtype=dtype)
         self.dtype = dtype
 
         self.grad = None
@@ -25,6 +25,13 @@ class Tensor:
         self.outdegree = 0
         self.bwdcost = 0
 
+    def astensor(self, obj):
+        if not isinstance(obj, self.__class__):
+            if not isinstance(obj, self.array.__class__):
+                obj = self.array.__class__(obj, dtype=self.dtype)
+            obj = Tensor(obj)
+        return obj
+
     def to(self, device):
         assert device in ("cpu", "gpu"), f"Device {device} not support yet."
         return getattr(self, device)()
@@ -32,7 +39,7 @@ class Tensor:
     def gpu(self):
         assert GPUArray != type(None), f"backend {BACKEND} not support gpu device"
         if not self._gpu:
-            return Tensor(values=GPUArray(self.array.numpy()),
+            return Tensor(array=GPUArray(self.array.numpy()),
                           requires_grad=self.requires_grad,
                           dependency=self.dependency,
                           dtype=self.dtype,
@@ -41,7 +48,7 @@ class Tensor:
 
     def cpu(self):
         if self._gpu:
-            return Tensor(values=CPUArray(self.array.numpy()),
+            return Tensor(array=CPUArray(self.array.numpy()),
                           requires_grad=self.requires_grad,
                           dependency=self.dependency,
                           dtype=self.dtype,
@@ -52,15 +59,6 @@ class Tensor:
         return self.array.numpy()
 
     @property
-    def values(self):
-        return self.array
-
-    @values.setter
-    def values(self, new_values):
-        self.array = new_values
-        self.grad = None
-
-    @property
     def shape(self):
         return self.array.shape
 
@@ -69,119 +67,34 @@ class Tensor:
                 f"requires_grad={self.requires_grad}, "
                 f"gpu={self._gpu}, array={self.array.__class__.__name__})")
 
-    def __gt__(self, other):
-        return ops.gt(self, self.__astensor(other))
+    for op in ("add", "sub", "mul", "div", "pow", "matmul"):
+        op_ = "truediv" if op == "div" else op
+        exec(f"def __{op_}__(self, other): return ops.{op}(self, self.astensor(other))")
+        exec(f"def __i{op_}__(self, other): self.array = self.array.__i{op_}__(self.astensor(other).array); return self")
+        exec(f"def __r{op_}__(self, other): return ops.{op}(self.astensor(other), self)")
 
-    def __eq__(self, other):
-        return ops.eq(self, self.__astensor(other))
+    for op in ("eq", "ge", "gt"):
+        exec(f"def __{op}__(self, other): return ops.{op}(self, self.astensor(other))")
 
-    def __ge__(self, other):
-        return ops.ge(self, self.__astensor(other))
+    exec(f"def __neg__(self): return ops.neg(self)")
 
-    def __add__(self, other):
-        return ops.add(self, self.__astensor(other))
+    for op in ("sum", "max", "log", "exp", "relu", "reshape", "flatten", "permute"):
+        exec(f"def {op}(self, *args, **kwargs): return ops.{op}(self, *args, **kwargs)")
 
-    def __radd__(self, other):
-        return ops.add(self.__astensor(other), self)
-
-    def __iadd__(self, other):
-        self.values += self.__astensor(other).values
-        return self
-
-    def __sub__(self, other):
-        return ops.sub(self, self.__astensor(other))
-
-    def __rsub__(self, other):
-        return ops.sub(self.__astensor(other), self)
-
-    def __isub__(self, other):
-        self.array = self.array - self.__astensor(other).values
-        return self
-
-    def __mul__(self, other):
-        return ops.mul(self, self.__astensor(other))
-
-    def __rmul__(self, other):
-        return ops.mul(self.__astensor(other), self)
-
-    def __imul__(self, other):
-        self.values *= self.__astensor(other).values
-        return self
-
-    def __truediv__(self, other):
-        return ops.div(self, self.__astensor(other))
-
-    def __rtruediv__(self, other):
-        return ops.div(self.__astensor(other), self)
-
-    def __itruediv__(self, other):
-        self.values = self.values / self.__astensor(other).values
-        return self
-
-    def __neg__(self):
-        return ops.neg(self)
+    @property
+    def T(self):
+        return ops.permute(self, axes=None)
 
     def __getitem__(self, key):
         return ops.getitem(self, key)
-
-    def __pow__(self, other):
-        return ops.pow(self, self.__astensor(other))
-
-    def __rpow__(self, other):
-        return ops.pow(self.__astensor(other), self)
-
-    def __ipow__(self, other):
-        self.values = self.values ** self.__astensor(other).values
-        return self
-
-    def __matmul__(self, other):
-        return ops.matmul(self, self.__astensor(other))
-
-    def __rmatmul__(self, other):
-        return ops.matmul(self.__astensor(other), self)
-
-    def __imatmul__(self, other):
-        self.values = self.values @ self.__astensor(other).values
-        return self
 
     def __len__(self):
         assert self.shape, "Error getting length of a 0-d tensor"
         return self.shape[0]
 
-    def sum(self, axis=None, keepdims=False):
-        return ops.sum(self, axis=axis, keepdims=keepdims)
-
-    def max(self, axis=None, keepdims=False):
-        return ops.max(self, axis=axis, keepdims=keepdims)
-
-    def min(self, axis=None, keepfims=False):
-        return ops.min(self, axis=axis, keepdims=keepdims)
-
-    def permute(self, axes=None):
-        return ops.permute(self, axes=axes)
-
-    def log(self):
-        return ops.log(self)
-
-    def reshape(self, newshape):
-        return ops.reshape(self, newshape)
-
-    def flatten(self):
-        return ops.flatten(self)
-
-    def relu(self):
-        return ops.relu(self)
-
-    def exp(self):
-        return ops.exp(self)
-
     @property
     def ndim(self):
         return len(self.shape)
-
-    @property
-    def T(self):
-        return ops.permute(self, axes=None)
 
     def backward(self, grad=None):
         assert self.requires_grad, "Call backward() on a non-requires-grad tensor."
@@ -207,11 +120,4 @@ class Tensor:
 
     def zero_grad(self):
         self.grad = None
-
-    def __astensor(self, obj):
-        if not isinstance(obj, self.__class__):
-            if not isinstance(obj, self.array.__class__):
-                obj = self.array.__class__(obj, dtype=self.dtype)
-            obj = Tensor(obj)
-        return obj
 

@@ -16,8 +16,8 @@ def get_fans(shape):
 
 class Initializer:
     def __call__(self, shape, dtype=np.float32, device="cpu", name=""):
-        values = self.init(tuple(shape), dtype=dtype, device=device)
-        return Tensor(values, requires_grad=True, dtype=dtype, name=name)
+        array = self.init(tuple(shape), dtype=dtype, device=device)
+        return Tensor(array, requires_grad=True, dtype=dtype, name=name)
 
     def init(self, shape, dtype, device):
         raise NotImplementedError

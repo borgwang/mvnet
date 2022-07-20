@@ -3,7 +3,7 @@ from core.dtype import float32
 from enum import Enum
 
 ElemwiseOps = Enum("ElemwiseOps",
-    ["NEG", "EXP", "LOG", "RELU", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT", "DRELU", "NOOP"])
+    ["NEG", "EXP", "LOG", "RELU", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT" , "NOOP"])
 ReduceOps = Enum("ReduceOps", ["SUM", "MAX"])
 ProcessingOps = Enum("ProcessingOps", ["MATMUL", "CONV"])
 ViewOps = Enum("ViewOps", ["SLICE", "RESHAPE", "PERMUTE", "EXPAND", "SQUEEZE"])
@@ -11,17 +11,18 @@ CreationOps = Enum("CreationOps", ["EMPTY", "FULL", "UNIFORM", "NORMAL"])
 
 class Array:
     for op in ("add", "sub", "mul", "div", "pow", "matmul"):
-        op_ = "truediv" if op is "div" else op
-        exec(f"def __{op_}__(self, other): return getattr(self, '{op}')(self.asarray(other))")
-        exec(f"def __i{op_}__(self, other): return getattr(self, '{op}')(self.asarray(other), out=self)")
-        exec(f"def __r{op_}__(self, other): return getattr(self.asarray(other), '{op}')(self)")
+        op_ = "truediv" if op == "div" else op
+        exec(f"def __{op_}__(self, other): return self.{op}(self.asarray(other))")
+        exec(f"def __i{op_}__(self, other): return self.{op}(self.asarray(other), out=self)")
+        exec(f"def __r{op_}__(self, other): return self.asarray(other).{op}(self)")
     for op in ("eq", "ge", "gt"):
-        exec(f"def __{op}__(self, other): return getattr(self, '{op}')(self.asarray(other))")
+        exec(f"def __{op}__(self, other): return self.{op}(self.asarray(other))")
     exec(f"def __neg__(self): return self.neg()")
 
-    def __init__(self, shape=None, dtype=float32, op_info=None):
-        self.op_info = op_info
+    def __init__(self, shape=None, dtype=float32, op_info=None, is_lazy=False):
         self.shape, self.dtype = shape, dtype
+        self.op_info = op_info
+        self.is_lazy = is_lazy
 
     def __repr__(self):
         clsname = self.__class__.__name__
@@ -82,29 +83,17 @@ class Array:
         retarrs = []
     """
 
-    # ##### Unary Ops #####
-    def neg(self): raise NotImplementedError
-    def exp(self): raise NotImplementedError
-    def log(self): raise NotImplementedError
-    def relu(self): raise NotImplementedError
-
-    # ##### Binary Ops #####
-    def add(self, other, out=None): raise NotImplementedError
-    def sub(self, other, out=None): raise NotImplementedError
-    def mul(self, other, out=None): raise NotImplementedError
-    def div(self, other, out=None): raise NotImplementedError
-    def pow(self, other, out=None): raise NotImplementedError
-    def eq(self, other, out=None): raise NotImplementedError
-    def gt(self, other): raise NotImplementedError
-    def ge(self, other): raise NotImplementedError
-    def matmul(self, other): raise NotImplementedError
-    def drelu(self, other): raise NotImplementedError
+    # ##### Elemwise Ops #####
+    for op in ("neg", "exp", "log", "relu"):
+        exec(f"def {op}(self, out=None): raise NotImplementedError")
+    for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt"):
+        exec(f"def {op}(self, other, out=None): raise NotImplementedError")
 
     # ##### Reduce Ops #####
     def sum(self, axis=None, keepdims=False): raise NotImplementedError
     def max(self, axis=None, keepdims=False): raise NotImplementedError
 
-    # ##### Movement Ops #####
+    # ##### View Ops #####
     def reshape(self, shape): raise NotImplementedError
     def expand(self, shape): raise NotImplementedError
     def squeeze(self, axis=None): raise NotImplementedError
@@ -127,7 +116,4 @@ class Array:
     def empty(cls, shape, dtype=float32): raise NotImplementedError
     @classmethod
     def full(cls, shape, value, dtype=float32): raise NotImplementedError
-    @classmethod
-    def zeros(cls, shape, dtype=float32): return cls.full(shape, 0, dtype)
-    @classmethod
-    def ones(cls, shape, dtype=float32): return cls.full(shape, 1, dtype)
+

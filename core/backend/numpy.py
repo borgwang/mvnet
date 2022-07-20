@@ -17,19 +17,19 @@ class NpArray(Array):
     def ndim(self): return len(self.data.shape)
     def numpy(self): return self.data.copy()
 
-    # ##### Element-wise Ops #####
-    def neg(self): return self.asarray(np.negative(self.data))
-    def exp(self): return self.asarray(np.exp(self.data))
-    def log(self): return self.asarray(np.log(self.data))
-    def relu(self): return self.asarray(np.maximum(self.data, 0))
+    # ##### Elemwise Ops #####
+    def neg(self, out=None): return self.asarray(np.negative(self.data))
+    def exp(self, out=None): return self.asarray(np.exp(self.data))
+    def log(self, out=None): return self.asarray(np.log(self.data))
+    def relu(self, out=None): return self.asarray(np.maximum(self.data, 0))
     def add(self, other, out=None): return self.asarray(self.data + other.data)
     def sub(self, other, out=None): return self.asarray(self.data - other.data)
     def div(self, other, out=None): return self.asarray(self.data / other.data)
     def mul(self, other, out=None): return self.asarray(self.data * other.data)
     def pow(self, other, out=None): return self.asarray(self.data ** other.data)
-    def eq(self, other): return self.asarray(self.data == other.data)
-    def ge(self, other): return self.asarray(self.data >= other.data)
-    def gt(self, other): return self.asarray(self.data > other.data)
+    def eq(self, other, out=None): return self.asarray(self.data == other.data)
+    def ge(self, other, out=None): return self.asarray(self.data >= other.data)
+    def gt(self, other, out=None): return self.asarray(self.data > other.data)
     def matmul(self, other): return self.asarray(self.data @ other.data)
     def drelu(self, other): return self.asarray((other.data > 0) * self.data)
 

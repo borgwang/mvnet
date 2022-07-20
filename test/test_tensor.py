@@ -15,7 +15,7 @@ def check_tensor(a, b, atol=0, rtol=1e-4):
 def test_binary():
     shape = (10, 2, 3, 4)
     ops = ("add", "sub", "mul", "truediv", "pow")
-    devices = ("cpu", "gpu")
+    devices = ("gpu",)
     for device in devices:
         for op in ops:
             ls, rs, inplace = f"__{op}__", f"__r{op}__", f"__i{op}__"
