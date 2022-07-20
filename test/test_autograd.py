@@ -5,7 +5,7 @@ import runtime_path  # isort:skip
 import numpy as np
 
 from core.tensor import Tensor
-from env import BACKEND
+from env import BACKEND, LAZY
 
 def test_add_op():
     devices = ("gpu", "cpu")
@@ -165,7 +165,7 @@ def test_reshape_ops():
 def test_slice():
     devices = ("gpu", "cpu")
     for device in devices:
-        data = np.arange(24).reshape((2, 3, 4)).astype(np.float32)
+        data = np.arange(1, 25).reshape((2, 3, 4)).astype(np.float32)
         t1 = Tensor(data, requires_grad=True).to(device)
         for s in ((1,),
                   (1, 2),
@@ -180,7 +180,6 @@ def test_slice():
             t2 = t1[s]
             assert t2.shape == data[s].shape
             assert np.allclose(t2.numpy(), data[s])
-            #assert t1.values.buffer == t2.values.buffer
             # unary ops
             assert np.allclose(t2.exp().numpy(), np.exp(data[s]))
             assert np.allclose(t2.log().numpy(), np.log(data[s]))
@@ -217,6 +216,8 @@ def test_slice():
 
 def test_minimal():
     np.random.seed(0)
+    n_epoch = 10
+
     BS = 2**6
     idim = 2**8
     odim = 2**6
@@ -226,7 +227,7 @@ def test_minimal():
     b_np = np.zeros((1, odim)).astype(np.float32)
 
     x, y, w, b = x_np.copy(), y_np.copy(), w_np.copy(), b_np.copy()
-    for epoch in range(10):
+    for epoch in range(n_epoch):
         pred = x @ w + b
         err = (pred - y)
         loss = (err**2).sum()
@@ -236,21 +237,25 @@ def test_minimal():
         b -= 0.0001 * db
     loss_final, w_final, b_final = loss, w, b
 
-    devices = ("gpu", "cpu")
+    devices = ("gpu",)
     for device in devices:
         x = Tensor(x_np).to(device)
         y = Tensor(y_np).to(device)
         w = Tensor(w_np, requires_grad=True).to(device)
         b = Tensor(b_np, requires_grad=True).to(device)
-        for epoch in range(10):
+        for epoch in range(n_epoch):
             w.zero_grad()
             b.zero_grad()
             pred = x @ w + b
             loss = ((pred - y)**2).sum()
             loss.backward()
+            # gradient descent
             w -= 0.0001 * w.grad
             b -= 0.0001 * b.grad
-        assert np.allclose(loss.values.numpy(), loss_final, rtol=1e-3)
+            if LAZY:
+                w.array = w.array.eager()
+                b.array = b.array.eager()
+        assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)
         assert np.allclose(b.numpy(), b_final, rtol=1e-3)
 

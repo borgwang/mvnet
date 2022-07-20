@@ -16,8 +16,8 @@ def get_fans(shape):
 
 class Initializer:
     def __call__(self, shape, dtype=np.float32, device="cpu", name=""):
-        values = self.init(tuple(shape), dtype=dtype, device=device)
-        return Tensor(values, requires_grad=True, dtype=dtype, name=name)
+        array = self.init(tuple(shape), dtype=dtype, device=device)
+        return Tensor(array, requires_grad=True, dtype=dtype, name=name)
 
     def init(self, shape, dtype, device):
         raise NotImplementedError
@@ -65,14 +65,6 @@ class ZerosInit(ConstantInit):
         super(ZerosInit, self).__init__(0.0)
 
 class XavierUniformInit(Initializer):
-    """
-    Implement the Xavier method described in
-    "Understanding the difficulty of training deep feedforward neural networks”
-    Glorot, X. & Bengio, Y. (2010)
-
-    Weights will have values sampled from uniform distribution U(-a, a) where
-    a = gain * sqrt(6.0 / (num_in + num_out))
-    """
     def __init__(self, gain=1.0):
         self._gain = gain
 
@@ -87,14 +79,6 @@ class XavierUniformInit(Initializer):
             raise ValueError(f"Invalid device type {device}")
 
 class XavierNormalInit(Initializer):
-    """
-    Implement the Xavier method described in
-    "Understanding the difficulty of training deep feedforward neural networks”
-    Glorot, X. & Bengio, Y. (2010)
-
-    Weights will have values sampled from uniform distribution N(0, std) where
-    std = gain * sqrt(1.0 / (num_in + num_out))
-    """
     def __init__(self, gain=1.0):
         self._gain = gain
 

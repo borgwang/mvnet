@@ -15,7 +15,7 @@ def check_tensor(a, b, atol=0, rtol=1e-4):
 def test_binary():
     shape = (10, 2, 3, 4)
     ops = ("add", "sub", "mul", "truediv", "pow")
-    devices = ("cpu", "gpu")
+    devices = ("gpu",)
     for device in devices:
         for op in ops:
             ls, rs, inplace = f"__{op}__", f"__r{op}__", f"__i{op}__"
@@ -31,11 +31,11 @@ def test_unary():
     for device in devices:
         npa = rnd(shape)
         a = getattr(Tensor(npa), device)()
-        check_tensor((-a), -npa)
-        check_tensor(((a+1e8).log()), np.log(npa+1e8))
-        check_tensor((a.exp()), np.exp(npa))
-        check_tensor((a.relu()), npa*(npa>0))
-        check_tensor((a>0), (npa>0).astype(np.float32))
+        check_tensor(-a, -npa)
+        check_tensor((a+1e8).log(), np.log(npa+1e8))
+        check_tensor(a.exp(), np.exp(npa))
+        check_tensor(a.relu(), npa*(npa>0))
+        check_tensor(a>0, (npa>0).astype(np.float32))
 
 def test_comparison_operators():
     shape = (64, 64)

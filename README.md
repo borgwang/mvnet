@@ -1,6 +1,6 @@
-## mvnn
+## mvnet
 
-mvnn is a small but fully functional deep learning framework built on top of [tinynn](https://github.com/borgwang/tinynn) and [tinynn-autograd](https://github.com/borgwang/tinynn-autograd)
+mvnet is a small but fully functional deep learning framework built on top of [tinynn](https://github.com/borgwang/tinynn) and [tinynn-autograd](https://github.com/borgwang/tinynn-autograd)
 
 ### Features
 - automatic differentiation
@@ -12,11 +12,15 @@ mvnn is a small but fully functional deep learning framework built on top of [ti
   - slice op
 - unit testing
 - speedup
-  - ops optimization
-  - jit
+  - kernel-level optimization
+  - graph-level optimization
 - backend
   - support cuda backend
-- readability
+
+### Laziness
+
+- A lazy node attributes: shape, strides, operator, operands, extra args
+- Recursive invoke the computation when we call eager on a lazy node
 
 ### License
 

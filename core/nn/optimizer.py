@@ -1,5 +1,7 @@
 from collections import defaultdict
 
+from env import LAZY
+
 class Optimizer:
     def __init__(self, params, lr, weight_decay):
         self.lr = lr
@@ -9,9 +11,10 @@ class Optimizer:
 
     def step(self):
         self.t += 1
-        for i, param in enumerate(self.params):
-            for name in param:
-                param[name].values += self._get_step(param[name].grad, key=f"{i}-{name}")
+        for i, param_dict in enumerate(self.params):
+            for name, param in param_dict.items():
+                param.array += self._get_step(param.grad, key=f"{i}-{name}")
+                if LAZY: param.array = param.array.eager()
 
     def _get_step(self, grad):
         raise NotImplementedError

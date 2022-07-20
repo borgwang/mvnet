@@ -1,8 +1,5 @@
-"""Example code for MNIST. A fully-connected network and a convolutional neural network were implemented."""
-
 import runtime_path  # isort:skip
 
-import matplotlib.pyplot as plt
 import argparse
 import gzip
 import os
@@ -15,14 +12,12 @@ import numpy as np
 from core.nn.net import SequentialNet
 from core.nn.layers import Dense, ReLU
 from core.nn.loss import SoftmaxCrossEntropyLoss
-from core.nn.optimizer import Adam
+from core.nn.optimizer import Adam, SGD
 from core.tensor import Tensor
 from utils.data_iterator import BatchIterator
 from utils.downloader import download_url
 from utils.evaluator import AccEvaluator
-from env import DEBUG, GRAPH
-
-import networkx as nx
+from env import DEBUG, GRAPH, LAZY
 
 def get_one_hot(targets, nb_classes):
     return np.eye(nb_classes)[np.array(targets).reshape(-1)]
@@ -38,41 +33,6 @@ def prepare_dataset(data_dir):
         sys.exit(1)
     with gzip.open(save_path, "rb") as f:
         return pickle.load(f, encoding="latin1")
-
-def build_graph(node, G):
-    if id(node) not in G.nodes:
-        G.add_node(id(node), name=node.name, shape=node.shape, outdegree=node.outdegree, bwdcost=node.bwdcost)
-        for dep in node.dependency:
-            subnode = dep["tensor"]
-            G = build_graph(subnode, G)
-            edge = (id(node), id(subnode))
-            if edge in G.edges:
-                cnt = nx.get_edge_attributes(G, "cnt")[edge]["cnt"]
-                nx.set_edge_attributes(G, {edge: {"cnt": cnt+1}})
-            else:
-                G.add_edge(*edge, cnt=1)
-    return G
-
-def plot_graph(start):
-    G = nx.Graph()
-    G = build_graph(start, G)
-    plt.figure(figsize=(24, 20))
-    pos = nx.spring_layout(G)
-    nx.draw(G, pos)
-    edge_labels = {}
-    for u, v, data in G.edges(data=True):
-        edge_labels[u, v] = f"{data['cnt']}"
-
-    total_bwdcost = 0
-    node_labels = {}
-    for n, data in G.nodes(data=True):
-        node_labels[n] = f"{data['name']}\n{data['shape']}\nbwdcosst: {data['bwdcost']:.4f}s"
-        if GRAPH: print(f"node: {data['name']} cost: {data['bwdcost']:.6f}")
-        total_bwdcost += data["bwdcost"]
-    nx.draw_networkx_labels(G, pos, labels=node_labels)
-    if GRAPH: print(f"total_bwdcost: {total_bwdcost:.4f}")
-    plt.savefig("test.png")
-    sys.exit()
 
 def main(args):
     if args.seed >= 0:
@@ -105,10 +65,7 @@ def main(args):
             x, y = batch.inputs.to(args.device), batch.targets.to(args.device)
             pred = net.forward(x)
             loss = loss_fn(pred, y)
-            if GRAPH: ts = time.monotonic()
             loss.backward()
-            if GRAPH: print("loss.backward() cost: ", time.monotonic() - ts)
-            if GRAPH: plot_graph(loss)
             optim.step()
             if args.onepass: sys.exit()
         print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))
@@ -118,13 +75,17 @@ def main(args):
             test_y_idx = test_y.numpy()
             print(evaluator.evaluate(test_pred_idx, test_y_idx))
 
+    from utils.helper import kernelstat
+    print(dict(kernelstat.counter))
+    print("total kernel call: ", kernelstat.total())
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_ep", default=50, type=int)
     parser.add_argument("--data_dir", default="./examples/mnist/data", type=str)
     parser.add_argument("--lr", default=1e-3, type=float)
     parser.add_argument("--batch_size", default=128, type=int)
-    parser.add_argument("--seed", default=-1, type=int)
+    parser.add_argument("--seed", default=0, type=int)
 
     parser.add_argument("--onepass", default=0, type=int)
     parser.add_argument("--eval", default=0, type=int)

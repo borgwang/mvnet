@@ -9,6 +9,7 @@ class NpArray(Array):
         super().__init__(shape, dtype)
         self.data = np.asarray(data)
         self.shape = self.data.shape
+        self.strides = tuple(s // dtype().itemsize for s in self.data.strides)
 
     @property
     def size(self): return self.data.nbytes
@@ -16,23 +17,19 @@ class NpArray(Array):
     def ndim(self): return len(self.data.shape)
     def numpy(self): return self.data.copy()
 
-    # ##### Unary Ops #####
-    def neg(self): return self.asarray(np.negative(self.data))
-    def exp(self): return self.asarray(np.exp(self.data))
-    def log(self): return self.asarray(np.log(self.data))
-    def relu(self): return self.asarray(np.maximum(self.data, 0))
-
-    # ##### Binary Ops #####
+    # ##### Elemwise Ops #####
+    def neg(self, out=None): return self.asarray(np.negative(self.data))
+    def exp(self, out=None): return self.asarray(np.exp(self.data))
+    def log(self, out=None): return self.asarray(np.log(self.data))
     def add(self, other, out=None): return self.asarray(self.data + other.data)
     def sub(self, other, out=None): return self.asarray(self.data - other.data)
     def div(self, other, out=None): return self.asarray(self.data / other.data)
     def mul(self, other, out=None): return self.asarray(self.data * other.data)
     def pow(self, other, out=None): return self.asarray(self.data ** other.data)
-    def eq(self, other): return self.asarray(self.data == other.data)
-    def ge(self, other): return self.asarray(self.data >= other.data)
-    def gt(self, other): return self.asarray(self.data > other.data)
+    def eq(self, other, out=None): return self.asarray(self.data == other.data)
+    def ge(self, other, out=None): return self.asarray(self.data >= other.data)
+    def gt(self, other, out=None): return self.asarray(self.data > other.data)
     def matmul(self, other): return self.asarray(self.data @ other.data)
-    def drelu(self, other): return self.asarray((other.data > 0) * self.data)
 
     # ##### Reduce Ops #####
     def sum(self, axis=None, keepdims=False):
@@ -40,11 +37,9 @@ class NpArray(Array):
     def max(self, axis=None, keepdims=False):
         return self.asarray(np.max(self.data, axis=axis, keepdims=keepdims))
 
-    # ##### Slice Ops #####
+    # ##### View Ops #####
     def __getitem__(self, key): return self.asarray(self.data[key])
     def __setitem__(self, key, value): self.data[key] = value.data
-
-    # ##### Movement Ops #####
     def reshape(self, shape): return self.asarray(np.reshape(self.data, shape))
     def expand(self, shape): return self.asarray(np.broadcast_to(self.data, shape))
     def squeeze(self, axis=None): return self.asarray(np.squeeze(self.data, axis))
