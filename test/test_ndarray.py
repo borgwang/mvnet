@@ -185,7 +185,6 @@ def test_matmul_op():
     for s1, s2 in shape_pairs:
         nparr1, nparr2 = rnd(s1), rnd(s2)
         arr1, arr2 = ClArray(nparr1), ClArray(nparr2)
-        print(s1, s2)
         check_array(arr1@arr2, nparr1@nparr2, rtol=1e-3)
 
     s1, s2 = (4, 5), (3, 5)

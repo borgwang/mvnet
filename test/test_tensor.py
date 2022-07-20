@@ -31,11 +31,11 @@ def test_unary():
     for device in devices:
         npa = rnd(shape)
         a = getattr(Tensor(npa), device)()
-        check_tensor((-a), -npa)
-        check_tensor(((a+1e8).log()), np.log(npa+1e8))
-        check_tensor((a.exp()), np.exp(npa))
-        check_tensor((a.relu()), npa*(npa>0))
-        check_tensor((a>0), (npa>0).astype(np.float32))
+        check_tensor(-a, -npa)
+        check_tensor((a+1e8).log(), np.log(npa+1e8))
+        check_tensor(a.exp(), np.exp(npa))
+        check_tensor(a.relu(), npa*(npa>0))
+        check_tensor(a>0, (npa>0).astype(np.float32))
 
 def test_comparison_operators():
     shape = (64, 64)

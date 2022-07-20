@@ -59,51 +59,24 @@ def get_tensor_graph(start):
     os.system(f"dot -Tsvg /tmp/{mode}.dot -o /tmp/{mode}.svg")
     print(f"[GRAPH] save to /tmp/{mode}.svg")
 
-# array graph (low level)
-def get_array_graph(start):
-    color_map = {"reduce": "#ecc30b", "elementwise": "#84bcda", "matmul": "#f37748",
-                 "contiguous": "#d56062"}
-    def build_graph(node, G):
-        if node is None:
-            return G
-        nid = id(node)
-        operator = node.operator
-        if nid in G.nodes: return G
-        G.add_node(nid)
-        G.nodes[nid]["label"] = f"{node.shape}\n{node.outdegree}\n{nid}\n"
-        dashed = False
-        if not operator:
-            G.nodes[nid]["fillcolor"] = "#ffffff"; dashed = True
-        else:
-            G.nodes[nid]["fillcolor"] = color_map[operator["type"]]
-        G.nodes[nid]["style"] = "filled, dashed" if dashed else "filled"
-        for name, subnode in node.operands.items():
-            G = build_graph(subnode, G)
-            edge = (id(subnode), nid)
-            if edge not in G.edges:
-                opname = operator["type"][:3].upper()
-                if "code" in operator: opname += ("_" + operator["code"])
-                G.add_edge(*edge, cnt=1, label=opname)
-        return G
-    G = nx.DiGraph()
-    G = build_graph(start, G)
-    mode = "array"
-    nx.drawing.nx_pydot.write_dot(G, f"/tmp/{mode}.dot")
-    os.system(f"dot -Tsvg /tmp/{mode}.dot -o /tmp/{mode}.svg")
-    print(f"[GRAPH] save to /tmp/{mode}.svg")
-
-
 class KernelStat:
     def __init__(self):
         self.reset()
     def reset(self):
-        self.counter = defaultdict(int)
-    def log(self, name):
-        self.counter[name] += 1
-    def get(self, name):
-        return self.counter[name]
+        self._counter = defaultdict(lambda : defaultdict(int))
+    def log(self, operator):
+        kerneltype = type(operator)
+        self._counter[kerneltype][operator.name] += 1
+    def get(self, kernel_type):
+        return self._counter[kernel_type]
     def total(self):
-        return sum(self.counter.values())
+        return sum(sum(v.values()) for k, v in self._counter.items())
+    @property
+    def info(self):
+        info = {}
+        for k, v in self._counter.items():
+            info[k] = dict(v)
+        return info
 
 kernelstat = KernelStat()
 

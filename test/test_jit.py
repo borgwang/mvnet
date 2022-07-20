@@ -5,6 +5,7 @@ import numpy as np
 from env import LAZY, GRAPH, OPT1
 from core.tensor import Tensor
 from utils.helper import get_tensor_graph, get_array_graph, kernelstat
+from core.backend.base import ElemwiseOps, ReduceOps, ProcessingOps, ViewOps, CreationOps
 
 def check_tensor(a, b, atol=0, rtol=1e-4):
     assert a.shape == b.shape
@@ -86,39 +87,41 @@ def test_lazy_forward():
     pred_np = pred_tmp_np / pred_tmp_np.sum()
     loss_np = np.sum(np.exp(np.log((pred_np - y_np)** 2)))
 
+    print(kernelstat.info)
     if LAZY:
         assert kernelstat.total() == 0  # not invoke yet, it' lazy
 
     kernelstat.reset()
     check_tensor(pred_tmp, pred_tmp_np, rtol=1e-3)
+    print(kernelstat.info)
     if LAZY:
-        assert kernelstat.get("matmul") == 1
-        assert kernelstat.get("elementwise") == 1
+        assert kernelstat.get(ProcessingOps)["MATMUL"] == 1
+        assert kernelstat.get(ElemwiseOps)["ADD"] == 1
 
     kernelstat.reset()
     check_tensor(pred, pred_np, rtol=1e-3)
+    print(kernelstat.info)
     if LAZY:
         # matmul has been invoked before
-        assert kernelstat.get("matmul") == 0
-        assert kernelstat.get("elementwise") == 1
+        assert kernelstat.get(ProcessingOps)["MATMUL"] == 0
+        assert kernelstat.get(ElemwiseOps)["DIV"] == 1
 
     kernelstat.reset()
     check_tensor(loss, loss_np, rtol=1e-3)
+    print(kernelstat.info)
     if LAZY:
-        assert kernelstat.get("matmul") == 0
+        assert kernelstat.get(ProcessingOps)["MATMUL"] == 0
         if not OPT1:
-            assert kernelstat.get("elementwise") == 4
+            assert sum(kernelstat.get(ElemwiseOps).values()) == 4 + 1
         else:
-            assert kernelstat.get("elementwise") == 1
+            assert sum(kernelstat.get(ElemwiseOps).values()) == 1 + 1
 
     kernelstat.reset()
     check_tensor(loss, loss_np, rtol=1e-3)
+    print(kernelstat.info)
     if LAZY:
-        # loss has been invoked before
-        assert kernelstat.get("matmul") == 0
-        assert kernelstat.get("elementwise") == 0
-        assert kernelstat.get("reeduce") == 0
-        assert kernelstat.get("contiguous") == 1
+        assert kernelstat.get(ElemwiseOps)["NOOP"] == 1
+        assert kernelstat.total() == 1
 
 def test_lazy_backward():
     BS = 64

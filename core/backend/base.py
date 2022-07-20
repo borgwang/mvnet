@@ -17,7 +17,7 @@ class Array:
         exec(f"def __r{op_}__(self, other): return getattr(self.asarray(other), '{op}')(self)")
     for op in ("eq", "ge", "gt"):
         exec(f"def __{op}__(self, other): return getattr(self, '{op}')(self.asarray(other))")
-    exec(f"def __neg__(self): self.neg()")
+    exec(f"def __neg__(self): return self.neg()")
 
     def __init__(self, shape=None, dtype=float32, op_info=None):
         self.op_info = op_info

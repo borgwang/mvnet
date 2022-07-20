@@ -36,7 +36,7 @@ class ClContext:
 
     @lru_cache(maxsize=None)
     def build(self, name, program):
-        if DEBUG > 1: print(f"[DEBUG] program {name}: \n {program}")
+        if DEBUG: print(f"[DEBUG] program {name}: \n {program}")
         kernel = pyopencl.Program(self.ctx, program).build().__getattr__(name)
         return lambda *args: kernel(self.queue, *args)
 
@@ -60,16 +60,11 @@ def elemwise_op(op_info):
     assert len(set([tuple(x.shape) for x in inp.values()])) == 1, \
         f"Invalid input shape for elemwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
     a = inp[list(inp.keys())[0]]
-    if op_info.args.get("out", None):
-        ret = op_info.args["out"]
-    else:
-        ret = a.__class__(shape=a.shape, dtype=a.dtype)
+    ret = op_info.args["out"] if op_info.args.get("out", None) is not None else a.__class__(shape=a.shape, dtype=a.dtype)
     args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
     args += "".join(f"int {name}_ofst, " for name in inp)
     args += "".join(f"__global const float *inp_{name}, " for name in inp)
-    update = ""
-    for i in range(ret.ndim):
-        update += f"idx=ptr/res_s{i}; ptr%=res_s{i};" + "".join(f"{name}_i+=idx*{name}_s{i};" for name in inp)
+    update = "".join(f"idx=ptr/res_s{i}; ptr%=res_s{i};" + "".join(f"{name}_i+=idx*{name}_s{i};" for name in inp) for i in range(ret.ndim))
     assign = ";".join(f"float {name}=inp_{name}[{name}_i+{name}_ofst]" for name in inp)
     src = f"""__kernel void ElemwiseOp({args} __global float *ret) {{
       {";".join(f"int {name}_i=0" for name in inp)};
@@ -82,14 +77,14 @@ def elemwise_op(op_info):
     args += [int32(x.offset) for x in inp.values()]
     args += [x.buffer for x in inp.values()]
     e = op((prod(a.shape),), None, *args, ret.buffer)
-    kernelstat.log(ElemwiseOps)
+    kernelstat.log(op_info.operator)
     if GRAPH: e.wait()
     return ret
 
 def matmul_op(op_info):
     # rule: https://numpy.org/doc/stable/reference/generated/numpy.matmul.html
-    a, b = op_info.operands["A"], op_info.operands["B"]
-    ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
+    a, b = op_info.operands.values()
+    ret_shape = op_info.ret_shape
     if op_info.args.get("out", None):
         ret = op_info.args["out"]
         assert ret.c_contiguous and ret.shape == ret_shape
@@ -100,7 +95,7 @@ def matmul_op(op_info):
     while gs <= 8 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
         gs *= 2
     gs //= 2
-    if DEBUG > 1: print(f"[DEBUG] BS:{BS} M:{M} K:{K} N:{N} grp_size:{gs}")
+    if DEBUG: print(f"[DEBUG] BS:{BS} M:{M} K:{K} N:{N} grp_size:{gs}")
     src = f"""__kernel void matmul_op(int BS, int M, int N, int K,
         {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))} int a_ofst, int b_ofst,
         __global const float *A, __global const float *B, __global float *C) {{
@@ -121,11 +116,11 @@ def matmul_op(op_info):
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
     e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
     if GRAPH: e.wait()
-    kernelstat.log("matmul")
+    kernelstat.log(op_info.operator)
     return ret
 
 def reduce_op(op_info):
-    x = op_info.operands["A"]
+    x = list(op_info.operands.values())[0]
     agg = REDUCE_AGG_FN[op_info.operator]
     pad = REDUCE_PAD_VAL[op_info.operator]
     x_shp = x.shape
@@ -180,9 +175,9 @@ def reduce_op(op_info):
     local_mem = cl.alloc_local_memory(x.dtype().itemsize * grp_size)
     local_size = tuple(grp_size if i == axis else 1 for i in range(ndim))
     e = op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
-    kernelstat.log("reduce")
+    kernelstat.log(op_info.operator)
     if GRAPH: e.wait()
-    if DEBUG > 1: print(f"[DEBUG] x_shp: {x_shp} ret_shape: {ret_shape} grp_size: {grp_size} n_grps: {n_grps} size: {size} global_size: {global_size} local_size: {local_size} axis={axis} ndim={ndim} offset={offset}")
+    if DEBUG: print(f"[DEBUG] x_shp: {x_shp} ret_shape: {ret_shape} grp_size: {grp_size} n_grps: {n_grps} size: {size} global_size: {global_size} local_size: {local_size} axis={axis} ndim={ndim} offset={offset}")
 
     if n_grps > 1:
         op_info = SimpleNamespace(operator=op_info.operator, operands={"A": ret}, args=dict(axis=axis, keepdims=keepdims))
@@ -200,9 +195,8 @@ def register_elemwise_op(func):
             inputs_ = Array.broadcast(*inputs)
             inputs = [resolve_operands(a, b) for a, b in zip(inputs, inputs_)]
         op = func(*inputs)
-        operands = dict(zip("AB", inputs))
         code = ELEMWISE_MAPPING[op]
-        op_info = SimpleNamespace(operator=op, code=code, operands=operands, args=kwargs)
+        op_info = SimpleNamespace(operator=op, code=code, operands=dict(zip("AB", inputs)), args=kwargs)
         if not LAZY or kwargs.get("eager", False):
             return elemwise_op(op_info)
         return ClArray(shape=inputs[0].shape, dtype=inputs[0].dtype, op_info=op_info, is_lazy=True)
@@ -210,10 +204,9 @@ def register_elemwise_op(func):
 
 def register_reduce_op(func):
     def wrapper(x, axis=None, keepdims=False):
-        x = x.contiguous(x) if not x.c_contiguous else x
+        x = x.contiguous() if not x.c_contiguous else x
         op = func(x, axis=axis, keepdims=keepdims)
-        operands = {"A": x}
-        op_info = SimpleNamespace(operator=op, operands=operands, args=dict(axis=axis, keepdims=keepdims))
+        op_info = SimpleNamespace(operator=op, operands={"A": x}, args=dict(axis=axis, keepdims=keepdims))
         if not LAZY:
             return reduce_op(op_info)
         # infer ret_shape
@@ -297,12 +290,9 @@ class ClArray(Array):
         assert a.shape[0] == b.shape[0] and a.shape[2] == b.shape[1], \
                 f"invalid shape for matmul {a.shape} @ {b.shape}"
         operands = {"A": a, "B": b}
-        op_info = SimpleNamespace(operator=ProcessingOps.MATMUL, operands=operands, args={"out": out})
-        if not LAZY:
-            # TODO: bug when lazy=False
-            arr = matmul_op(op_info)
-        else:
-            arr = ClArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
+        args = {"out": out}
+        op_info = SimpleNamespace(operator=ProcessingOps.MATMUL, operands=operands, args=args, ret_shape=ret_shape)
+        arr = matmul_op(op_info) if not LAZY else ClArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
         for axis in squeezes:
             arr = arr.squeeze(axis)
         return arr
