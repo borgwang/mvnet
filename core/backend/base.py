@@ -6,7 +6,7 @@ ElemwiseOps = Enum("ElemwiseOps",
     ["NEG", "EXP", "LOG", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT" , "NOOP"])
 ReduceOps = Enum("ReduceOps", ["SUM", "MAX"])
 ProcessingOps = Enum("ProcessingOps", ["MATMUL", "CONV"])
-ViewOps = Enum("ViewOps", ["SLICE", "RESHAPE", "PERMUTE", "EXPAND", "SQUEEZE"])
+ViewOps = Enum("ViewOps", ["SLICE", "RESHAPE", "PERMUTE", "EXPAND"])
 CreationOps = Enum("CreationOps", ["EMPTY", "FULL", "UNIFORM", "NORMAL"])
 
 class Array:
@@ -37,7 +37,7 @@ class Array:
 
     @property
     def ndim(self):
-        raise NotImplementedError
+        return len(self.shape)
 
     @classmethod
     def asarray(cls, obj):

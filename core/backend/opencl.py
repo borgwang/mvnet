@@ -7,7 +7,7 @@ import numpy as np
 import pyopencl
 import pyopencl.clrandom as clrandom
 
-from env import DEBUG, GRAPH, LAZY
+from env import DEBUG, GRAPH, LAZY, OPT1
 from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
 from core.dtype import int32, float32
 from core.jit.graph import GraphOptimizer
@@ -65,13 +65,12 @@ def elemwise_op(op_info):
     args += "".join(f"__global const float *inp_{name}, " for name in inp)
     update = "".join(f"idx=ptr/res_s{i}; ptr%=res_s{i};" + "".join(f"{name}_i+=idx*{name}_s{i};" for name in inp) for i in range(ret.ndim))
     assign = ";".join(f"float {name}=inp_{name}[{name}_i+{name}_ofst]" for name in inp)
-    src = f"""__kernel void ElemwiseOp({args} __global float *ret) {{
+    op = cl.build("ElemwiseOp", f"""__kernel void ElemwiseOp({args} __global float *ret) {{
       {";".join(f"int {name}_i=0" for name in inp)};
       int idx=0, gl_id=get_global_id(0); int ptr=gl_id;
       {update}; {assign};
       ret[gl_id] = {op_info.code};
-    }}"""
-    op = cl.build("ElemwiseOp", src)
+    }}""")
     args = [int32(s) for ss in zip(*[x.strides for x in (list(inp.values())+[ret])]) for s in ss]
     args += [int32(x.offset) for x in inp.values()]
     args += [x.buffer for x in inp.values()]
@@ -95,7 +94,7 @@ def matmul_op(op_info):
         gs *= 2
     gs //= 2
     if DEBUG: print(f"[DEBUG] BS:{BS} M:{M} K:{K} N:{N} grp_size:{gs}")
-    src = f"""__kernel void matmul_op(int BS, int M, int N, int K,
+    op = cl.build("matmul_op", f"""__kernel void matmul_op(int BS, int M, int N, int K,
         {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))} int a_ofst, int b_ofst,
         __global const float *A, __global const float *B, __global float *C) {{
       int bs=get_global_id(0), m=get_global_id(1), n=get_global_id(2), i=get_local_id(1), j=get_local_id(2);
@@ -109,8 +108,7 @@ def matmul_op(op_info):
         barrier(CLK_LOCAL_MEM_FENCE);
       }}
       C[bs*M*N+m*N+n] = acc;
-    }}"""
-    op = cl.build("matmul_op", src)
+    }}""")
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
     e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
@@ -120,27 +118,26 @@ def matmul_op(op_info):
 
 def reduce_op(op_info):
     x = list(op_info.operands.values())[0]
-    agg = REDUCE_AGG_FN[op_info.operator]
-    pad = REDUCE_PAD_VAL[op_info.operator]
+    agg, pad = REDUCE_AGG_FN[op_info.operator], REDUCE_PAD_VAL[op_info.operator]
     x_shp = x.shape
     axis, keepdims = op_info.args["axis"], op_info.args["keepdims"]
     if axis is None: axis, x_shp = 0, (prod(x.shape),)
     size = x_shp[axis]
-
-    def cal_ret_shape(x_shp, axis, keepdims, grp_size, n_grps):
-        if n_grps <= 1:
-            ret_shape = [d for i, d in enumerate(x_shp) if i != axis]
-            if keepdims: ret_shape.insert(axis, 1)
-            return tuple(ret_shape)
-        return tuple(n_grps if i == axis else d for i, d in enumerate(x_shp))
 
     grp_size = 2
     max_work_group_size = cl.queue.device.max_work_group_size
     while grp_size != max_work_group_size and grp_size < size:
         grp_size *= 2
 
+    def calculate_ret_shape(x_shp, axis, keepdims, grp_size, n_grps):
+        if n_grps <= 1:
+            ret_shape = [d for i, d in enumerate(x_shp) if i != axis]
+            if keepdims: ret_shape.insert(axis, 1)
+            return tuple(ret_shape)
+        return tuple(n_grps if i == axis else d for i, d in enumerate(x_shp))
+
     n_grps = (size + grp_size - 1) // grp_size
-    ret_shape = cal_ret_shape(x_shp, axis, keepdims, grp_size, n_grps)
+    ret_shape = calculate_ret_shape(x_shp, axis, keepdims, grp_size, n_grps)
     ret = x.__class__(shape=ret_shape, dtype=x.dtype)
     # merge non-target axes
     p1 = [prod(x_shp[:axis])] if axis!=0 else []
@@ -160,23 +157,22 @@ def reduce_op(op_info):
     offset = f"gl_id_0*{'0' if axis==0 else '1' if axis==ndim-1 else 'gl_s_2'}*(gl_s_{axis}-size)"
     op = cl.build("reduce_op", f"""__kernel void reduce_op(int size, int ofst, __global const float *inp, __local float *lcl, __global float *ret) {{
       {''.join([f'int gl_id_{i}=get_global_id({i});int gl_s_{i}=get_global_size({i});int grp_id_{i}=get_group_id({i});int grp_s_{i}=get_local_size({i});' for i in range(ndim)])}
-      int lcl_id=get_local_id({axis});
-      lcl[lcl_id] = gl_id_{axis}<size?inp[{gl2lcl}-{offset}+ofst]:{pad};
+      int lcl_id = get_local_id({axis});
+      lcl[lcl_id] = gl_id_{axis} < size ? inp[{gl2lcl}-{offset}+ofst] : {pad};
       barrier(CLK_LOCAL_MEM_FENCE);
-      for (int stride=grp_s_{axis}>>1; stride>0; stride>>=1) {{
+      for (int stride = grp_s_{axis}>>1; stride > 0; stride>>=1) {{
         float A = lcl[lcl_id], B = lcl[lcl_id+stride];
-        if (lcl_id<stride) lcl[lcl_id]={agg};
+        if (lcl_id<stride) lcl[lcl_id] = {agg};
         barrier(CLK_LOCAL_MEM_FENCE);
       }}
-      if (lcl_id == 0) ret[{lcl2gl}]=lcl[0];
+      if (lcl_id == 0) ret[{lcl2gl}] = lcl[0];
     }}""")
     local_mem = cl.alloc_local(x.dtype().itemsize * grp_size)
     local_size = tuple(grp_size if i == axis else 1 for i in range(ndim))
     e = op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
+    if DEBUG: print(f"[DEBUG] x_shp: {x_shp} ret_shape: {ret_shape} grp_size: {grp_size} n_grps: {n_grps} size: {size} global_size: {global_size} local_size: {local_size} axis={axis} ndim={ndim} offset={offset}")
     kernelstat.log(op_info.operator)
     if GRAPH: e.wait()
-    if DEBUG: print(f"[DEBUG] x_shp: {x_shp} ret_shape: {ret_shape} grp_size: {grp_size} n_grps: {n_grps} size: {size} global_size: {global_size} local_size: {local_size} axis={axis} ndim={ndim} offset={offset}")
-
     if n_grps > 1:
         op_info = SimpleNamespace(operator=op_info.operator, operands={"A": ret}, args=dict(axis=axis, keepdims=keepdims))
         ret = reduce_op(op_info)
@@ -193,20 +189,34 @@ def expand_op(op_info):
             assert s1 == 1
         strides.append(0 if s1 < s2 else inst.strides[i])
     inst.shape, inst.strides = tuple(shape), tuple(strides)
-    inst.c_contiguous, inst.f_contiguous = False, False
+    inst._update_contiguity()
+    return inst
+
+def reshape_op(op_info):
+    shape = op_info.args["shape"]
+    x = list(op_info.operands.values())[0]
+    inst = copy.copy(x)
+    if inst.c_contiguous:
+        strides = (prod(shape[i+1:]) for i in range(len(shape)))
+    else:
+        strides = (prod(shape[:i]) for i in range(len(shape)))
+    inst.shape, inst.strides = tuple(shape), tuple(strides)
+    inst._update_contiguity()
+    return inst
+
+def permute_op(op_info):
+    axes = op_info.args["axes"]
+    x = list(op_info.operands.values())[0]
+    inst = copy.copy(x)
+    inst.strides = tuple(inst.strides[a] for a in axes)
+    inst.shape = tuple(inst.shape[a] for a in axes)
+    inst._update_contiguity()
     return inst
 
 def register_elemwise_op(func):
-    def broadcast_operands(a, b):
-        if a.shape != b.shape and len(b.op_info.operands):
-            b, *opds = Array.broadcast(b, *b.op_info.operands.values())
-            b.op_info.operands = dict(zip(b.op_info.operands.keys(), opds))
-        return b
-
     def wrapper(*inputs, **kwargs):
         if len(inputs) > 1:
             inputs_ = Array.broadcast(*inputs)
-            #inputs = [broadcast_operands(a, b) for a, b in zip(inputs, inputs_)]
             inputs = inputs_
         op = func(*inputs)
         code = ELEMWISE_MAPPING[op]
@@ -218,9 +228,8 @@ def register_elemwise_op(func):
 
 def register_reduce_op(func):
     def wrapper(x, axis=None, keepdims=False):
-        x = x.contiguous() if not x.c_contiguous else x
         op = func(x, axis=axis, keepdims=keepdims)
-        op_info = SimpleNamespace(operator=op, operands={"A": x}, args=dict(axis=axis, keepdims=keepdims))
+        op_info = SimpleNamespace(operator=op, operands={"A": x.contiguous()}, args=dict(axis=axis, keepdims=keepdims))
         if not LAZY:
             return ClArray._invoke(op_info)
         ret_shape = () if axis is None else [d for i, d in enumerate(x.shape) if i != axis]
@@ -247,18 +256,13 @@ class ClArray(Array):
                 assert self.shape is not None, "Array shape is None!"
                 self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
-        self.strides = tuple(prod(self.shape[i+1:]) for i in range(len(self.shape)))
+        self.strides = tuple(prod(self.shape[i+1:]) for i in range(self.ndim))
+        self._update_contiguity()
         self.offset = 0  # offset relative to the beginning of the buffer
-        self.c_contiguous, self.f_contiguous = True, False
-        self._update_contiguousness()
 
     @property
     def size(self):
         return self.buffer.size
-
-    @property
-    def ndim(self):
-        return len(self.shape)
 
     def numpy(self):
         arr = self.eager() if self.is_lazy else self
@@ -269,7 +273,7 @@ class ClArray(Array):
     # ##### Elemwise Ops #####
     for op in ("neg", "exp", "log"):
         exec(f"@register_elemwise_op\ndef {op}(self, out=None): return ElemwiseOps.{op.upper()}")
-    for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt"):
+    for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt", "contiguous"):
         exec(f"@register_elemwise_op\ndef {op}(self, other, out=None): return ElemwiseOps.{op.upper()}")
     exec(f"@register_elemwise_op\ndef contiguous(self): return ElemwiseOps.NOOP")
 
@@ -317,25 +321,34 @@ class ClArray(Array):
             infer = prod([s for s in shape if s != -1])
             assert size % infer == 0, f"Shape {shape} invalid for size {size}"
             shape = (*shape[:axis], size // infer, *shape[axis+1:])
-
+        shape = tuple(shape)
         assert prod(shape) == prod(self.shape), f"Can not reshape {self.shape} to {shape}"
-        if self.c_contiguous or self.f_contiguous:
-            inst = copy.copy(self)
-            if self.c_contiguous:
-                strides = (prod(shape[i+1:]) for i in range(len(shape)))
-            else:
-                strides = (prod(shape[:i]) for i in range(len(shape)))
-            inst.shape, inst.strides = tuple(shape), tuple(strides)
-            inst._update_contiguousness()
-        else:
-            inst = self.contiguous().reshape(shape)
-        return inst
+        op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self.contiguous()}, args={"shape": shape})
+        if not LAZY: return reshape_op(op_info)
+        return ClArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+
+    def permute(self, axes):
+        assert sorted(list(axes)) == list(range(self.ndim))
+        shape = tuple(self.shape[a] for a in axes)
+        op_info = SimpleNamespace(operator=ViewOps.PERMUTE, operands={"A": self}, args={"axes": axes})
+        if not LAZY: return permute_op(op_info)
+        return ClArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+
+    def squeeze(self, axis=None):
+        if axis is None:
+            axis = [i for i, s in enumerate(self.shape) if s == 1]
+        elif isinstance(axis, int):
+            axis = [axis]
+        axis = tuple([a if a != -1 else self.ndim - 1 for a in axis])
+        shape = tuple([s for i, s in enumerate(self.shape) if i not in axis or self.shape[i] != 1])
+        if shape == self.shape:
+            return self
+        return self.reshape(shape)
 
     def __getitem__(self, key):
         # TODO: handle step
         is_basic = lambda k: isinstance(k, (slice, int))
-        assert is_basic(key) or all(is_basic(k) for k in key), \
-                f"Advantage indexing not supported yet. {key}"
+        assert is_basic(key) or all(is_basic(k) for k in key), f"Advantage indexing not supported yet. {key}"
         key = (key,) if is_basic(key) else key
         inst = copy.copy(self)
         reduce = []
@@ -354,7 +367,7 @@ class ClArray(Array):
                 assert 0 <= start < stop <= inst.shape[i], f"Invalid slicing {key[i]} for tensor {inst.shape}"
                 shape[i] = stop - start
                 inst.offset += inst.strides[i] * start
-                inst.c_contiguous, inst.f_contiguous = False, False  # TODO: is still contiguous under certain conditions
+                inst._update_contiguity()
         inst.shape = tuple(s for i, s in enumerate(shape) if i not in reduce)
         inst.strides = tuple(s for i, s in enumerate(inst.strides) if i not in reduce)
         return inst
@@ -363,26 +376,6 @@ class ClArray(Array):
         item = self[key]
         # unary_op("noop", value, ret=item)
         assert False, "TODO: implement assign ops"
-
-
-    def squeeze(self, axis=None):
-        if axis is None:
-            axis = [i for i, s in enumerate(self.shape) if s == 1]
-        elif isinstance(axis, int):
-            axis = [axis]
-        assert isinstance(axis, (list, tuple))
-        axis = [a if a != -1 else self.ndim - 1 for a in axis]
-        shape = [s for i, s in enumerate(self.shape) if i not in axis or self.shape[i] != 1]
-        if shape == self.shape:
-            return self
-        return self.reshape(shape)
-
-    def permute(self, axes):
-        inst = copy.copy(self)
-        inst.strides = tuple(inst.strides[a] for a in axes)
-        inst.shape = tuple(inst.shape[a] for a in axes)
-        inst._update_contiguousness()
-        return inst
 
     # ##### Creation Ops #####
     @classmethod
@@ -409,49 +402,59 @@ class ClArray(Array):
     @staticmethod
     def _invoke(op_info):
         optype = type(op_info.operator)
-        if optype is ElemwiseOps: return elemwise_op(op_info)
+        if optype is ElemwiseOps: 
+            return elemwise_op(op_info)
         elif optype is ReduceOps: return reduce_op(op_info)
         elif optype is ProcessingOps: return matmul_op(op_info)
         elif optype is ViewOps:
-            if op_info.operator == ViewOps.EXPAND:
-                return expand_op(op_info)
+            if op_info.operator == ViewOps.EXPAND: return expand_op(op_info)
+            elif op_info.operator == ViewOps.RESHAPE: return reshape_op(op_info)
+            elif op_info.operator == ViewOps.PERMUTE: return permute_op(op_info)
             else: raise ValueError(f"Invoke invalid operator {op}")
         else: raise ValueError(f"Invoke invalid operator {op}")
 
+    def update_from_eager(self, eager):
+        assert self.is_lazy
+        if type(self.op_info.operator) == ViewOps:
+            self.strides, self.shape = eager.strides, eager.shape
+            self.c_contiguous, self.f_contiguous = eager.c_contiguous, eager.f_contiguous
+        self.buffer = eager.buffer
+        self.is_lazy = False
+        self.op_info = SimpleNamespace(operator=None, operands={})
+        return self
+
     def eager(self):
-        # will modify array in place (lazy -> eager)
         def recursive_eager(node=None):
             if node is None: node = self
             for name, dep_node in node.op_info.operands.items():
                 if dep_node.is_lazy:
                     eager = recursive_eager(dep_node)
-                    dep_node.buffer = eager.buffer
-                    if dep_node.op_info.operator == ViewOps.EXPAND:
-                        dep_node.strides = eager.strides
-                        dep_node.c_contiguous = eager.c_contiguous
-                        dep_node.f_contiguous = eager.f_contiguous
-                    dep_node.is_lazy = False
-                    dep_node.op_info = SimpleNamespace(operator=None, operands={})
+                    dep_node.update_from_eager(eager)
             return self._invoke(node.op_info)
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer.build()
         if GRAPH: graphoptimizer.visualize()
         graphoptimizer.optimize()
-        if GRAPH: graphoptimizer.visualize("opt")
+        if GRAPH and OPT1: graphoptimizer.visualize("opt")
         eager = recursive_eager()
-        self.buffer = eager.buffer
-        # for ops that only change the meta data, we should fork the meta data
-        if self.op_info.operator == ViewOps.EXPAND:
-            self.strides = eager.strides
-            self.c_contiguous = eager.c_contiguous
-            self.f_contiguous = eager.f_contiguous
-        self.is_lazy = False
-        self.op_info = SimpleNamespace(operator=None, operands={})
+        self = self.update_from_eager(eager)
         return self
 
-    def _update_contiguousness(self):
-        strides = [self.strides[i] for i in range(self.ndim) if self.shape[i] != 1]
-        sorted_strides = sorted(strides)
-        self.f_contiguous = sorted_strides == strides
-        self.c_contiguous = sorted_strides[::-1] == strides
+    def _update_contiguity(self):
+        # https://github.com/numpy/numpy/blob/4c60b3263ac50e5e72f6a909e156314fc3c9cba0/numpy/core/src/multiarray/flagsobject.c#L115
+        self.c_contiguous = self.f_contiguous = True
+        if not self.ndim:
+            return
+        nitems = 1
+        for i in range(self.ndim-1, -1, -1):
+            if self.shape[i] != 1:
+                if self.strides[i] != nitems:
+                    self.c_contiguous = False
+                nitems *= self.shape[i]
+        nitems = 1
+        for i in range(self.ndim):
+            if self.shape[i] != 1:
+                if self.strides[i] != nitems:
+                    self.f_contiguous = False
+                nitems *= self.shape[i]
 

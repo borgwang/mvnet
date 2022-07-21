@@ -76,6 +76,7 @@ class GraphOptimizer:
             if node is None: return G
             nid = id(node)
             if nid in G.nodes: return G
+
             G.add_node(nid)
             G.nodes[nid]["shape"] = "box"
             G.nodes[nid]["label"] = f"{node.shape}\n{nid}"

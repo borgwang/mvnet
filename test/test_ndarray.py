@@ -11,28 +11,26 @@ rnd = lambda shape: np.random.normal(0, 1, shape).astype(np.float32)
 def check_array(myarr, nparr, atol=0, rtol=1e-3, ignore=()):
     assert myarr.shape == nparr.shape
     assert myarr.dtype == nparr.dtype
+    assert np.allclose(myarr.numpy(), nparr, atol=atol, rtol=rtol)
     if "stride" not in ignore:
         np_strides = tuple(s // myarr.dtype().itemsize for s in nparr.strides)
         assert myarr.strides == np_strides
     if "contig" not in ignore:
         assert myarr.c_contiguous == nparr.flags.c_contiguous
         assert myarr.f_contiguous == nparr.flags.f_contiguous
-    assert np.allclose(myarr.numpy(), nparr, atol=atol, rtol=rtol)
 
-def test_resahpe():
+def test_reshape():
     shape = (2, 3, 4)
     nparr = np.arange(np.prod(shape)).reshape(shape).astype(np.float32)
     arr = ClArray(nparr)
     check_array(arr, nparr)
-    for shape in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
-        check_array(arr.reshape(shape), nparr.reshape(shape))
-
-    for shape in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
-        check_array(arr.T.reshape(shape), nparr.T.reshape(shape, order="A"))
-
-    for shape in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
-        check_array(arr.permute((0, 2, 1)).reshape(shape),
-                    nparr.transpose((0, 2, 1)).reshape(shape, order="A"))
+    #for s in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
+    #    check_array(arr.reshape(s), nparr.reshape(s))
+    #for s in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
+    #    check_array(arr.T.reshape(s), nparr.T.reshape(s, order="A"))
+    for s in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
+        check_array(arr.permute((0, 2, 1)).reshape(s),
+                    nparr.transpose((0, 2, 1)).reshape(s, order="A"))
 
 def test_contiguous():
     shape = (2, 3, 4)
@@ -94,28 +92,20 @@ def test_elemwise_op():
     nparr += 1
     check_array(arr, nparr)
 
-    """
+    # on broadcasted array
+    shape = (1,)
+    nparr = rnd(shape)
+    arr = ClArray(nparr).reshape((1, 1, 1)).expand((3, 4, 5))
+    nparr = np.broadcast_to(nparr.reshape((1, 1, 1)), (3, 4, 5))
+    check_array(arr, nparr)
+    check_array(arr.exp(), np.exp(nparr))
+
     shape = (2, 4, 5)
     nparr = rnd(shape)
     arr = ClArray(nparr)
-    check_array(unary_op("sign", arr), np.sign(nparr).astype(np.float32))
-    check_array(unary_op("neg", arr), -nparr)
-    check_array(unary_op("log", arr+1e8), np.log(nparr+1e8))
-    check_array(unary_op("exp", arr), np.exp(nparr))
-    check_array(unary_op("relu", arr), nparr*(nparr>0))
-
-    shape = (1,)
-    nparr = rnd(shape)
-    arr = ClArray(nparr)
-    arr = arr.reshape((1, 1, 1)).expand((3, 4, 5))
-    nparr = np.broadcast_to(nparr.reshape((1, 1, 1)), (3, 4, 5))
-    arr2 = unary_op("exp", arr)
-    assert arr2.shape == arr.shape
-    # TODO: fix
-    #assert arr2.strides == arr.strides
-    #assert arr2.size == arr.size
-    check_array(unary_op("exp", arr), np.exp(nparr), ignore=("stride", "contig"))
-    """
+    check_array(-arr, -nparr)
+    check_array((arr+1e8).log(), np.log(nparr+1e8))
+    check_array(arr.exp(), np.exp(nparr))
 
 def test_reduce_op():
     for name in ("sum", "max"):
@@ -133,6 +123,14 @@ def test_reduce_op():
             for axis in range(nparr.ndim):
                 check_array(op1(axis=axis), op2(axis=axis))
                 check_array(op1(axis=axis, keepdims=True), op2(axis=axis, keepdims=True), ignore=("stride",))
+
+            nparr = np.arange(np.prod(shape)).reshape(shape).astype(np.float32)
+            arr = ClArray(nparr)
+            arr, nparr = arr.T, nparr.T
+            op1, op2 = getattr(arr, name), getattr(nparr, name)
+            for axis in range(nparr.ndim):
+                check_array(op1(axis=axis), op2(axis=axis), ignore=("stride", "contig"))
+                check_array(op1(axis=axis, keepdims=True), op2(axis=axis, keepdims=True), ignore=("stride", "contig"))
 
 def test_random():
     arr = ClArray.uniform(-1, 1, (100000,))

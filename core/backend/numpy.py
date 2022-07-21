@@ -13,8 +13,6 @@ class NpArray(Array):
 
     @property
     def size(self): return self.data.nbytes
-    @property
-    def ndim(self): return len(self.data.shape)
     def numpy(self): return self.data.copy()
 
     # ##### Elemwise Ops #####
@@ -32,10 +30,8 @@ class NpArray(Array):
     def matmul(self, other): return self.asarray(self.data @ other.data)
 
     # ##### Reduce Ops #####
-    def sum(self, axis=None, keepdims=False):
-        return self.asarray(np.sum(self.data, axis=axis, keepdims=keepdims))
-    def max(self, axis=None, keepdims=False):
-        return self.asarray(np.max(self.data, axis=axis, keepdims=keepdims))
+    def sum(self, axis=None, keepdims=False): return self.asarray(np.sum(self.data, axis=axis, keepdims=keepdims))
+    def max(self, axis=None, keepdims=False): return self.asarray(np.max(self.data, axis=axis, keepdims=keepdims))
 
     # ##### View Ops #####
     def __getitem__(self, key): return self.asarray(self.data[key])
