@@ -182,16 +182,32 @@ def reduce_op(op_info):
         ret = reduce_op(op_info)
     return ret
 
+def expand_op(op_info):
+    shape = op_info.args["shape"]
+    x = list(op_info.operands.values())[0]
+    inst = copy.copy(x)
+    assert len(shape) == inst.ndim
+    strides = []
+    for i, (s1, s2) in enumerate(zip(inst.shape, shape)):
+        if s1 < s2:
+            assert s1 == 1
+        strides.append(0 if s1 < s2 else inst.strides[i])
+    inst.shape, inst.strides = tuple(shape), tuple(strides)
+    inst.c_contiguous, inst.f_contiguous = False, False
+    return inst
+
 def register_elemwise_op(func):
     def broadcast_operands(a, b):
-        if a.is_lazy and a.shape != b.shape:
+        if a.shape != b.shape and len(b.op_info.operands):
             b, *opds = Array.broadcast(b, *b.op_info.operands.values())
             b.op_info.operands = dict(zip(b.op_info.operands.keys(), opds))
         return b
+
     def wrapper(*inputs, **kwargs):
         if len(inputs) > 1:
             inputs_ = Array.broadcast(*inputs)
-            inputs = [broadcast_operands(a, b) for a, b in zip(inputs, inputs_)]
+            #inputs = [broadcast_operands(a, b) for a, b in zip(inputs, inputs_)]
+            inputs = inputs_
         op = func(*inputs)
         code = ELEMWISE_MAPPING[op]
         op_info = SimpleNamespace(operator=op, code=code, operands=dict(zip("AB", inputs)), args=kwargs)
@@ -288,6 +304,33 @@ class ClArray(Array):
         return arr
 
     # ##### View Ops #####
+    def expand(self, shape):
+        op_info = SimpleNamespace(operator=ViewOps.EXPAND, operands={"A": self}, args={"shape": shape})
+        if not LAZY: return expand_op(op_info)
+        return ClArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+
+    def reshape(self, shape):
+        if -1 in shape:
+            size = prod(self.shape)
+            assert shape.count(-1) <= 1, "Only one dimension can be inferred"
+            axis = shape.index(-1)
+            infer = prod([s for s in shape if s != -1])
+            assert size % infer == 0, f"Shape {shape} invalid for size {size}"
+            shape = (*shape[:axis], size // infer, *shape[axis+1:])
+
+        assert prod(shape) == prod(self.shape), f"Can not reshape {self.shape} to {shape}"
+        if self.c_contiguous or self.f_contiguous:
+            inst = copy.copy(self)
+            if self.c_contiguous:
+                strides = (prod(shape[i+1:]) for i in range(len(shape)))
+            else:
+                strides = (prod(shape[:i]) for i in range(len(shape)))
+            inst.shape, inst.strides = tuple(shape), tuple(strides)
+            inst._update_contiguousness()
+        else:
+            inst = self.contiguous().reshape(shape)
+        return inst
+
     def __getitem__(self, key):
         # TODO: handle step
         is_basic = lambda k: isinstance(k, (slice, int))
@@ -321,39 +364,6 @@ class ClArray(Array):
         # unary_op("noop", value, ret=item)
         assert False, "TODO: implement assign ops"
 
-    def reshape(self, shape):
-        if -1 in shape:
-            size = prod(self.shape)
-            assert shape.count(-1) <= 1, "Only one dimension can be inferred"
-            axis = shape.index(-1)
-            infer = prod([s for s in shape if s != -1])
-            assert size % infer == 0, f"Shape {shape} invalid for size {size}"
-            shape = (*shape[:axis], size // infer, *shape[axis+1:])
-
-        assert prod(shape) == prod(self.shape), f"Can not reshape {self.shape} to {shape}"
-        if self.c_contiguous or self.f_contiguous:
-            inst = copy.copy(self)
-            if self.c_contiguous:
-                strides = (prod(shape[i+1:]) for i in range(len(shape)))
-            else:
-                strides = (prod(shape[:i]) for i in range(len(shape)))
-            inst.shape, inst.strides = tuple(shape), tuple(strides)
-            inst._update_contiguousness()
-        else:
-            inst = self.contiguous().reshape(shape)
-        return inst
-
-    def expand(self, shape):
-        inst = copy.copy(self)
-        assert len(shape) == inst.ndim
-        strides = []
-        for i, (s1, s2) in enumerate(zip(inst.shape, shape)):
-            if s1 < s2:
-                assert s1 == 1
-            strides.append(0 if s1 < s2 else inst.strides[i])
-        inst.shape, inst.strides = tuple(shape), tuple(strides)
-        inst.c_contiguous, inst.f_contiguous = False, False
-        return inst
 
     def squeeze(self, axis=None):
         if axis is None:
@@ -402,27 +412,39 @@ class ClArray(Array):
         if optype is ElemwiseOps: return elemwise_op(op_info)
         elif optype is ReduceOps: return reduce_op(op_info)
         elif optype is ProcessingOps: return matmul_op(op_info)
-        elif optype is ContiguousOps: return contiguous_op(op_info)
+        elif optype is ViewOps:
+            if op_info.operator == ViewOps.EXPAND:
+                return expand_op(op_info)
+            else: raise ValueError(f"Invoke invalid operator {op}")
         else: raise ValueError(f"Invoke invalid operator {op}")
 
     def eager(self):
         # will modify array in place (lazy -> eager)
         def recursive_eager(node=None):
             if node is None: node = self
-            info = node.op_info
-            for name, dep_node in info.operands.items():
+            for name, dep_node in node.op_info.operands.items():
                 if dep_node.is_lazy:
-                    dep_node.buffer = recursive_eager(dep_node).buffer
+                    eager = recursive_eager(dep_node)
+                    dep_node.buffer = eager.buffer
+                    if dep_node.op_info.operator == ViewOps.EXPAND:
+                        dep_node.strides = eager.strides
+                        dep_node.c_contiguous = eager.c_contiguous
+                        dep_node.f_contiguous = eager.f_contiguous
                     dep_node.is_lazy = False
-                    # TODO: should or should not earse?
                     dep_node.op_info = SimpleNamespace(operator=None, operands={})
-            return self._invoke(info)
+            return self._invoke(node.op_info)
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer.build()
         if GRAPH: graphoptimizer.visualize()
         graphoptimizer.optimize()
         if GRAPH: graphoptimizer.visualize("opt")
-        self.buffer = recursive_eager().buffer
+        eager = recursive_eager()
+        self.buffer = eager.buffer
+        # for ops that only change the meta data, we should fork the meta data
+        if self.op_info.operator == ViewOps.EXPAND:
+            self.strides = eager.strides
+            self.c_contiguous = eager.c_contiguous
+            self.f_contiguous = eager.f_contiguous
         self.is_lazy = False
         self.op_info = SimpleNamespace(operator=None, operands={})
         return self

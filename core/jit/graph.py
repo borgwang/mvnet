@@ -51,11 +51,13 @@ class GraphOptimizer:
                     operands.update(dep_node.op_info.operands)
                     experssion = f"({dep_node.op_info.code})"
                     node.op_info.code = node.op_info.code.replace(name, experssion)
+                    if DEBUG: print(f"DEBUG replace expression {id(node)} {name} -> {experssion}")
                 else:
                     new_name = varnamegetter.get()
                     operands[new_name] = dep_node
                     if type(operator) is ElemwiseOps:
                         node.op_info.code = node.op_info.code.replace(name, new_name)
+                        if DEBUG: print(f"DEBUG replace name {id(node)} {name} -> {new_name}")
         node.is_visited = True
         node.op_info.operands = operands
 
@@ -69,7 +71,7 @@ class GraphOptimizer:
         if OPT1: self._merge_elemwise(node=self.root)
 
     def visualize(self, suffix=""):
-        color_map = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748"}
+        color_map = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}
         def build_nx_graph(node, G):
             if node is None: return G
             nid = id(node)
@@ -79,8 +81,10 @@ class GraphOptimizer:
             G.nodes[nid]["label"] = f"{node.shape}\n{nid}"
             if hasattr(node.op_info, "code"):
                 G.nodes[nid]["label"] += f"\n{node.op_info.code}"
+            elif node.op_info.operator is not None:
+                G.nodes[nid]["label"] += f"\n{node.op_info.operator.name}"
             G.nodes[nid]["fillcolor"] = color_map[type(node.op_info.operator)] if node.is_lazy else "#ffffff"
-            G.nodes[nid]["style"] = "filled, dashed" if node.is_lazy else "filled"
+            G.nodes[nid]["style"] = "filled, dashed" if not node.is_lazy else "filled"
             for name, subnode in node.op_info.operands.items():
                 G = build_nx_graph(subnode, G)
                 edge = (id(subnode), nid)

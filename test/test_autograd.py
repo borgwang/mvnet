@@ -216,7 +216,7 @@ def test_slice():
 
 def test_minimal():
     np.random.seed(0)
-    n_epoch = 10
+    n_epoch = 2
 
     BS = 2**6
     idim = 2**8
@@ -249,7 +249,6 @@ def test_minimal():
             pred = x @ w + b
             loss = ((pred - y)**2).sum()
             loss.backward()
-            # gradient descent
             w -= 0.0001 * w.grad
             b -= 0.0001 * b.grad
             if LAZY:
