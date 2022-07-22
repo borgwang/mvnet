@@ -3,7 +3,7 @@ from core.dtype import float32
 from enum import Enum
 
 ElemwiseOps = Enum("ElemwiseOps",
-    ["NEG", "EXP", "LOG", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT" , "NOOP"])
+    ["NEG", "EXP", "LOG", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT" , "NOOP", "RELU", "DRELU"])
 ReduceOps = Enum("ReduceOps", ["SUM", "MAX"])
 ProcessingOps = Enum("ProcessingOps", ["MATMUL", "CONV"])
 ViewOps = Enum("ViewOps", ["SLICE", "RESHAPE", "PERMUTE", "EXPAND"])

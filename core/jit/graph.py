@@ -79,7 +79,7 @@ class GraphOptimizer:
             # node attrubutes
             label = f"{node.shape}\n{nid}"
             if node.op_info.operator is not None: label += f"\n{node.op_info.operator.name}"
-            if hasattr(node.op_info, "code"): label += f"\n{node.op_info.code}"
+            #if hasattr(node.op_info, "code"): label += f"\n{node.op_info.code}"
             G.nodes[nid]["label"] = label
             G.nodes[nid]["shape"] = "box"
             G.nodes[nid]["style"] = "filled, dashed" if not node.is_lazy else "filled"

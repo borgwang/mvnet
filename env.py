@@ -8,3 +8,6 @@ OPT1 = int(os.getenv("OPT1", "0"))  # graph optimization: merge_elementwise
 
 assert BACKEND in ("numpy", "opencl", "cuda"), f"backend {BACKEND} not supported!"
 
+if LAZY:
+    assert BACKEND in ("opencl",), f"currently lazy mode only support opencl backend!"
+

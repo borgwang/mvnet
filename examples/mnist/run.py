@@ -17,7 +17,8 @@ from core.tensor import Tensor
 from utils.data_iterator import BatchIterator
 from utils.downloader import download_url
 from utils.evaluator import AccEvaluator
-from env import DEBUG, GRAPH, LAZY
+from utils.helper import kernelstat
+from env import DEBUG, GRAPH, LAZY, BACKEND
 
 def get_one_hot(targets, nb_classes):
     return np.eye(nb_classes)[np.array(targets).reshape(-1)]
@@ -34,6 +35,15 @@ def prepare_dataset(data_dir):
     with gzip.open(save_path, "rb") as f:
         return pickle.load(f, encoding="latin1")
 
+import line_profiler, signal, sys, atexit
+profile = line_profiler.LineProfiler()
+def handle_exit(*args):
+    profile.print_stats()
+signal.signal(signal.SIGTERM, handle_exit)
+signal.signal(signal.SIGINT, handle_exit)
+atexit.register(handle_exit)
+
+@profile
 def main(args):
     if args.seed >= 0:
         np.random.seed(args.seed)
@@ -53,7 +63,8 @@ def main(args):
             Dense(64), ReLU(),
             Dense(32), ReLU(),
             Dense(10)).to(args.device)
-    optim = Adam(net.get_parameters(), lr=args.lr)
+    #optim = Adam(net.get_parameters(), lr=args.lr)
+    optim = SGD(net.get_parameters(), lr=args.lr)
     loss_fn = SoftmaxCrossEntropyLoss()
 
     iterator = BatchIterator(batch_size=args.batch_size)
@@ -67,7 +78,10 @@ def main(args):
             loss = loss_fn(pred, y)
             loss.backward()
             optim.step()
-            if args.onepass: sys.exit()
+            if args.onepass:
+                print(kernelstat.info)
+                print("total kernel call: ", kernelstat.total())
+                sys.exit()
         print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))
         if args.eval:
             test_pred = net.forward(test_x).numpy()
@@ -75,8 +89,7 @@ def main(args):
             test_y_idx = test_y.numpy()
             print(evaluator.evaluate(test_pred_idx, test_y_idx))
 
-    from utils.helper import kernelstat
-    print(dict(kernelstat.counter))
+    print(kernelstat.info)
     print("total kernel call: ", kernelstat.total())
 
 if __name__ == "__main__":
@@ -89,6 +102,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--onepass", default=0, type=int)
     parser.add_argument("--eval", default=0, type=int)
-    parser.add_argument("--device", default="gpu", type=str)
+    default_device = "gpu" if BACKEND in ("opencl", "cuda") else "cpu"
+    parser.add_argument("--device", default=default_device, type=str)
     args = parser.parse_args()
     main(args)

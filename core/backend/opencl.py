@@ -15,7 +15,8 @@ from utils.opencl import cl
 ELEMWISE_MAPPING = {
     ElemwiseOps.NOOP: "A", ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)", ElemwiseOps.LOG: "log(A)",
     ElemwiseOps.ADD: "A+B", ElemwiseOps.SUB: "A-B", ElemwiseOps.DIV: "A/B", ElemwiseOps.MUL: "A*B", ElemwiseOps.POW: "pow(A,B)",
-    ElemwiseOps.EQ: "(float)isequal(A,B)", ElemwiseOps.GE: "(float)isgreaterequal(A,B)", ElemwiseOps.GT: "(float)isgreater(A,B)"
+    ElemwiseOps.EQ: "(float)isequal(A,B)", ElemwiseOps.GE: "(float)isgreaterequal(A,B)", ElemwiseOps.GT: "(float)isgreater(A,B)",
+    ElemwiseOps.RELU: "max(A,0.0f)", ElemwiseOps.DRELU: "B>0?A:0.0f"
 }
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
@@ -24,6 +25,9 @@ OpInfo = namedtuple("OpInfo", ["operator", "operands", "code", "ret_shape", "arg
 
 
 def elemwise_op(op_info):
+    inp = list(op_info.operands.values())[0]
+    if op_info.operator == ElemwiseOps.NOOP:
+        if inp.c_contiguous: return inp
     inp = op_info.operands
     assert len(set([tuple(x.shape) for x in inp.values()])) == 1, \
         f"Invalid input shape for elemwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
@@ -222,9 +226,9 @@ class ClArray(Array):
         return data
 
     # ##### Elemwise Ops #####
-    for op in ("neg", "exp", "log"):
+    for op in ("neg", "exp", "log", "relu"):
         exec(f"@register_elemwise_op\ndef {op}(self, out=None): return ElemwiseOps.{op.upper()}")
-    for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt", "contiguous"):
+    for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt", "contiguous", "drelu"):
         exec(f"@register_elemwise_op\ndef {op}(self, other, out=None): return ElemwiseOps.{op.upper()}")
     exec(f"@register_elemwise_op\ndef contiguous(self): return ElemwiseOps.NOOP")
 
