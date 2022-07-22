@@ -1,5 +1,3 @@
-import numpy as np
-
 from env import GRAPH
 from utils.helper import timer, genname
 from utils.math import argsort
@@ -159,4 +157,3 @@ def getitem(arr, key):
         ret[key] = g  # TODO
         return ret
     return result, grad_fn
-

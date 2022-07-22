@@ -117,4 +117,3 @@ class Tensor:
 
     def zero_grad(self):
         self.grad = None
-

@@ -41,7 +41,6 @@ class Array:
 
     @classmethod
     def asarray(cls, obj):
-        from core.backend.opencl import ClArray
         if not isinstance(obj, cls):
             obj = cls(obj.numpy()) if issubclass(obj.__class__, Array) else cls(obj)
         return obj

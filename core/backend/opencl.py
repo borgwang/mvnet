@@ -1,11 +1,8 @@
 import copy
-from collections import defaultdict
-from functools import lru_cache
 from types import SimpleNamespace
 
 import numpy as np
 import pyopencl
-import pyopencl.clrandom as clrandom
 
 from env import DEBUG, GRAPH, LAZY, OPT1
 from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
@@ -13,6 +10,7 @@ from core.dtype import int32, float32
 from core.jit.graph import GraphOptimizer
 from utils.math import prod
 from utils.helper import kernelstat
+from utils.opencl import cl
 
 ELEMWISE_MAPPING = {
     ElemwiseOps.NOOP: "A", ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)", ElemwiseOps.LOG: "log(A)",
@@ -22,37 +20,6 @@ ELEMWISE_MAPPING = {
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
-class ClContext:
-    def __init__(self):
-        self.ctx, self.queue = None, None
-        platform = pyopencl.get_platforms()[0]
-        devices = platform.get_devices(device_type=pyopencl.device_type.GPU)
-        if len(devices) == 0:
-            devices = platform.get_devices(device_type=pyopencl.device_type.CPU)
-        self.ctx = pyopencl.Context(devices)
-        self.queue = pyopencl.CommandQueue(self.ctx)
-        self.rng = clrandom.PhiloxGenerator(self.ctx, seed=0)
-
-    @lru_cache(maxsize=None)
-    def build(self, name, program):
-        if DEBUG: print(f"[DEBUG] program {name}: \n {program}")
-        kernel = pyopencl.Program(self.ctx, program).build().__getattr__(name)
-        return lambda *args: kernel(self.queue, *args)
-
-    def alloc_local(self, size):
-        return pyopencl.LocalMemory(size)
-
-    def alloc_buffer(self, shape, dtype, hostbuf=None):
-        size = int(dtype().itemsize * prod(shape))
-        flags = pyopencl.mem_flags.READ_WRITE
-        if hostbuf is not None:
-            flags |= pyopencl.mem_flags.COPY_HOST_PTR
-        return pyopencl.Buffer(self.ctx, flags, size, hostbuf=hostbuf)
-
-    def enqueue(self, task, *args, **kwargs):
-        getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs)
-
-cl = ClContext()
 
 def elemwise_op(op_info):
     inp = op_info.operands
@@ -410,8 +377,8 @@ class ClArray(Array):
             if op_info.operator == ViewOps.EXPAND: return expand_op(op_info)
             elif op_info.operator == ViewOps.RESHAPE: return reshape_op(op_info)
             elif op_info.operator == ViewOps.PERMUTE: return permute_op(op_info)
-            else: raise ValueError(f"Invoke invalid operator {op}")
-        else: raise ValueError(f"Invoke invalid operator {op}")
+            else: raise ValueError(f"Invoke invalid operator {op_info.operator}")
+        else: raise ValueError(f"Invoke invalid operator {op_info.operator}")
 
     def update_from_eager(self, eager):
         assert self.is_lazy
@@ -437,14 +404,13 @@ class ClArray(Array):
         graphoptimizer.optimize()
         if GRAPH and OPT1: graphoptimizer.visualize("opt")
         eager = recursive_eager()
-        self = self.update_from_eager(eager)
+        self.update_from_eager(eager)
         return self
 
     def _update_contiguity(self):
         # https://github.com/numpy/numpy/blob/4c60b3263ac50e5e72f6a909e156314fc3c9cba0/numpy/core/src/multiarray/flagsobject.c#L115
         self.c_contiguous = self.f_contiguous = True
-        if not self.ndim:
-            return
+        if not self.ndim: return
         nitems = 1
         for i in range(self.ndim-1, -1, -1):
             if self.shape[i] != 1:
@@ -457,4 +423,3 @@ class ClArray(Array):
                 if self.strides[i] != nitems:
                     self.f_contiguous = False
                 nitems *= self.shape[i]
-
