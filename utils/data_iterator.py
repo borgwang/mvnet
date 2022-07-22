@@ -6,14 +6,7 @@ import numpy as np
 
 Batch = namedtuple("Batch", ["inputs", "targets"])
 
-
-class BaseIterator(object):
-
-    def __call__(self, inputs, targets):
-        raise NotImplementedError
-
-
-class BatchIterator(BaseIterator):
+class BatchIterator:
 
     def __init__(self, batch_size=32, shuffle=True):
         self.batch_size = batch_size

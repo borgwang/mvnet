@@ -26,10 +26,8 @@ class Array:
 
     def __repr__(self):
         clsname = self.__class__.__name__
-        if self.is_lazy:
-            clsname = "Lazy" + clsname
-        return (f"<{clsname} dtype={self.dtype} shape={self.shape} "
-                f"strides={self.strides}>")
+        if self.is_lazy: clsname = "Lazy" + clsname
+        return (f"<{clsname} dtype={self.dtype} shape={self.shape} " f"strides={self.strides}>")
 
     @property
     def size(self):
@@ -50,7 +48,7 @@ class Array:
 
     @staticmethod
     def broadcast(*arrs):
-        # rule: https://numpy.org/doc/stable/user/basics.broadcasting.html
+        # https://numpy.org/doc/stable/user/basics.broadcasting.html
         if len(set([arr.shape for arr in arrs])) == 1:
             return arrs
         reverted_shapes = [arr.shape[::-1] for arr in arrs]
@@ -98,4 +96,3 @@ class Array:
     def empty(cls, shape, dtype=float32): raise NotImplementedError
     @classmethod
     def full(cls, shape, value, dtype=float32): raise NotImplementedError
-

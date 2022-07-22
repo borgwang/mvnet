@@ -7,7 +7,7 @@ class NpArray(Array):
     """Wrap numpy ndarray"""
     def __init__(self, data, shape=None, dtype=float32):
         super().__init__(shape, dtype)
-        self.data = np.asarray(data)
+        self.data = np.asarray(data, dtype)
         self.shape = self.data.shape
         self.strides = tuple(s // dtype().itemsize for s in self.data.strides)
 
@@ -54,4 +54,3 @@ class NpArray(Array):
     @classmethod
     def normal(cls, loc, scale, shape, dtype=float32):
         return cls.asarray(np.random.normal(loc, scale, shape).astype(dtype))
-

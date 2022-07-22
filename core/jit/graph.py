@@ -99,4 +99,3 @@ class GraphOptimizer:
         nx.drawing.nx_pydot.write_dot(G, f"/tmp/{name}.dot")
         os.system(f"dot -Tsvg /tmp/{name}.dot -o /tmp/{name}.svg")
         print(f"[GRAPH] save to /tmp/{name}.svg")
-

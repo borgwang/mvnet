@@ -1,5 +1,4 @@
-from env import GRAPH
-from utils.helper import timer, genname
+from utils.helper import genname
 from utils.math import argsort
 
 def unbroadcast(func, shape):
@@ -28,12 +27,10 @@ def autograd_ops(func):
         dependency = []
         for i, (ts, grad_fn) in enumerate(zip(tss, grad_fns)):
             if ts.requires_grad and grad_fn:
-                if GRAPH: grad_fn = timer(grad_fn)
+                ts.degree += 1
                 grad_fn.__name__ = f"grad_fn_{i+1} for {func.__name__}"
                 dependency.append(dict(tensor=ts, grad_fn=grad_fn))
-                ts.outdegree += 1
-        name = genname(func.__name__, *tss)
-        return Tensor(arr, requires_grad, dependency, name=name)
+        return Tensor(arr, requires_grad, dependency, name=genname(func.__name__, *tss))
     return wrapper
 
 @autograd_ops
@@ -130,15 +127,13 @@ def log(arr):
 @autograd_ops
 def relu(arr):
     mask = arr > 0
-    result = mask * arr
     grad_fn = lambda g: mask * g
     return mask * arr, grad_fn
 
 @autograd_ops
 def reshape(arr, shape):
-    result = arr.reshape(shape)
     grad_fn = lambda g: g.reshape(arr.shape)
-    return result, grad_fn
+    return arr.reshape(shape), grad_fn
 
 @autograd_ops
 def permute(arr, axes=None):
@@ -151,9 +146,8 @@ def permute(arr, axes=None):
 
 @autograd_ops
 def getitem(arr, key):
-    result = arr[key]
     def grad_fn(g):
         ret = g.__class__.zeros(arr.shape)
         ret[key] = g  # TODO
         return ret
-    return result, grad_fn
+    return arr[key], grad_fn
