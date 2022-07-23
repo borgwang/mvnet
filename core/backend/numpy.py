@@ -3,11 +3,11 @@ import numpy as np
 from core.backend.base import Array
 from core.dtype import float32
 
-class NpArray(Array):
+class NPArray(Array):
     """Wrap numpy ndarray"""
     def __init__(self, data, shape=None, dtype=float32):
         super().__init__(shape, dtype)
-        self.data = np.asarray(data)
+        self.data = np.asarray(data, dtype=dtype)
         self.shape = self.data.shape
         self.strides = tuple(s // dtype().itemsize for s in self.data.strides)
 

@@ -1,5 +1,4 @@
 import os
-import string
 import networkx as nx
 from env import OPT1, DEBUG
 from utils.helper import varnamegetter
@@ -72,28 +71,27 @@ class GraphOptimizer:
 
     def visualize(self, suffix=""):
         color_map = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}
-        def build_nx_graph(node, G):
+        def build_graph(node, G):
             if node is None: return G
             nid = id(node)
             if nid in G.nodes: return G
 
             G.add_node(nid)
+            label = f"{node.shape}\n{nid}"
+            if node.op_info.operator is not None: label += f"\n{node.op_info.operator.name}"
+            #if hasattr(node.op_info, "code"): label += f"\n{node.op_info.code}"
+            G.nodes[nid]["label"] = label
             G.nodes[nid]["shape"] = "box"
-            G.nodes[nid]["label"] = f"{node.shape}\n{nid}"
-            if hasattr(node.op_info, "code"):
-                G.nodes[nid]["label"] += f"\n{node.op_info.code}"
-            elif node.op_info.operator is not None:
-                G.nodes[nid]["label"] += f"\n{node.op_info.operator.name}"
-            G.nodes[nid]["fillcolor"] = color_map[type(node.op_info.operator)] if node.is_lazy else "#ffffff"
             G.nodes[nid]["style"] = "filled, dashed" if not node.is_lazy else "filled"
+            G.nodes[nid]["fillcolor"] = color_map[type(node.op_info.operator)] if node.is_lazy else "#ffffff"
             for name, subnode in node.op_info.operands.items():
-                G = build_nx_graph(subnode, G)
+                G = build_graph(subnode, G)
                 edge = (id(subnode), nid)
                 if edge not in G.edges:
                     G.add_edge(*edge, cnt=1, label=name)
             return G
         G = nx.DiGraph()
-        G = build_nx_graph(self.root, G)
+        G = build_graph(self.root, G)
         name = "net"
         if suffix: name += "_" + suffix
         nx.drawing.nx_pydot.write_dot(G, f"/tmp/{name}.dot")

@@ -1,10 +1,7 @@
 import itertools
-import os
 import string
 import time
 from collections import defaultdict
-
-import networkx as nx
 
 def timer(func):
     def wrapper(*args, **kwargs):

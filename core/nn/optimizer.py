@@ -21,14 +21,17 @@ class Optimizer:
         raise NotImplementedError
 
 class SGD(Optimizer):
-    def __init__(self, params, lr=0.01, momentum=0.9, weight_decay=0.0):
+    def __init__(self, params, lr=0.01, momentum=0.0, weight_decay=0.0):
         super().__init__(params, lr, weight_decay)
         self._momentum = momentum
         self._acc = defaultdict(int)
 
     def _get_step(self, grad, key):
-        self._acc[key] = self._momentum * self._acc[key] + grad
-        return -self.lr * self._acc[key]
+        if self._momentum:
+            self._acc[key] = self._momentum * self._acc[key] + grad
+            return -self.lr * self._acc[key]
+        else:
+            return -self.lr * grad
 
 class RMSProp(Optimizer):
     def __init__(self, params, lr=0.01, decay=0.99, momentum=0.0, epsilon=1e-8, weight_decay=0.0):

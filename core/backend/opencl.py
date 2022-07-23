@@ -22,7 +22,7 @@ ELEMWISE_MAPPING = {
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
-class ClContext:
+class CLContext:
     def __init__(self):
         self.ctx, self.queue = None, None
         platform = pyopencl.get_platforms()[0]
@@ -52,7 +52,7 @@ class ClContext:
     def enqueue(self, task, *args, **kwargs):
         getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs)
 
-cl = ClContext()
+cl = CLContext()
 
 def elemwise_op(op_info):
     inp = op_info.operands
@@ -178,38 +178,20 @@ def reduce_op(op_info):
         ret = reduce_op(op_info)
     return ret
 
-def expand_op(op_info):
-    shape = op_info.args["shape"]
+def view_op(op_info):
     x = list(op_info.operands.values())[0]
     inst = copy.copy(x)
-    assert len(shape) == inst.ndim
-    strides = []
-    for i, (s1, s2) in enumerate(zip(inst.shape, shape)):
-        if s1 < s2:
-            assert s1 == 1
-        strides.append(0 if s1 < s2 else inst.strides[i])
+    if op_info.operator == ViewOps.EXPAND:
+        shape = op_info.args["shape"]
+        strides = [0 if s1 < s2 else inst.strides[i] for i, (s1, s2) in enumerate(zip(inst.shape, shape))]
+    elif op_info.operator == ViewOps.RESHAPE:
+        shape = op_info.args["shape"]
+        strides = (prod(shape[i+1:]) for i in range(len(shape))) if inst.c_contiguous else (prod(shape[:i]) for i in range(len(shape)))
+    elif op_info.operator == ViewOps.PERMUTE:
+        axes = op_info.args["axes"]
+        shape = tuple(inst.shape[a] for a in axes)
+        strides = tuple(inst.strides[a] for a in axes)
     inst.shape, inst.strides = tuple(shape), tuple(strides)
-    inst._update_contiguity()
-    return inst
-
-def reshape_op(op_info):
-    shape = op_info.args["shape"]
-    x = list(op_info.operands.values())[0]
-    inst = copy.copy(x)
-    if inst.c_contiguous:
-        strides = (prod(shape[i+1:]) for i in range(len(shape)))
-    else:
-        strides = (prod(shape[:i]) for i in range(len(shape)))
-    inst.shape, inst.strides = tuple(shape), tuple(strides)
-    inst._update_contiguity()
-    return inst
-
-def permute_op(op_info):
-    axes = op_info.args["axes"]
-    x = list(op_info.operands.values())[0]
-    inst = copy.copy(x)
-    inst.strides = tuple(inst.strides[a] for a in axes)
-    inst.shape = tuple(inst.shape[a] for a in axes)
     inst._update_contiguity()
     return inst
 
@@ -222,8 +204,8 @@ def register_elemwise_op(func):
         code = ELEMWISE_MAPPING[op]
         op_info = SimpleNamespace(operator=op, code=code, operands=dict(zip("AB", inputs)), args=kwargs)
         if not LAZY or kwargs.get("eager", False):  # NOTE: for numpy() call
-            return ClArray._invoke(op_info)
-        return ClArray(shape=inputs[0].shape, dtype=inputs[0].dtype, op_info=op_info, is_lazy=True)
+            return CLArray._invoke(op_info)
+        return CLArray(shape=inputs[0].shape, dtype=inputs[0].dtype, op_info=op_info, is_lazy=True)
     return wrapper
 
 def register_reduce_op(func):
@@ -231,14 +213,14 @@ def register_reduce_op(func):
         op = func(x, axis=axis, keepdims=keepdims)
         op_info = SimpleNamespace(operator=op, operands={"A": x.contiguous()}, args=dict(axis=axis, keepdims=keepdims))
         if not LAZY:
-            return ClArray._invoke(op_info)
+            return CLArray._invoke(op_info)
         ret_shape = () if axis is None else [d for i, d in enumerate(x.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
-        return ClArray(shape=tuple(ret_shape), dtype=x.dtype, op_info=op_info, is_lazy=True)
+        return CLArray(shape=tuple(ret_shape), dtype=x.dtype, op_info=op_info, is_lazy=True)
     return wrapper
 
 
-class ClArray(Array):
+class CLArray(Array):
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
         super().__init__(shape, dtype, op_info, is_lazy)
         self.op_info = SimpleNamespace(operator=None, operands={}) if op_info is None else op_info
@@ -302,7 +284,7 @@ class ClArray(Array):
         operands = {"A": a, "B": b}
         args = {"out": out}
         op_info = SimpleNamespace(operator=ProcessingOps.MATMUL, operands=operands, args=args, ret_shape=ret_shape)
-        arr = self._invoke(op_info) if not LAZY else ClArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
+        arr = self._invoke(op_info) if not LAZY else CLArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
         for axis in squeezes:
             arr = arr.squeeze(axis)
         return arr
@@ -310,8 +292,8 @@ class ClArray(Array):
     # ##### View Ops #####
     def expand(self, shape):
         op_info = SimpleNamespace(operator=ViewOps.EXPAND, operands={"A": self}, args={"shape": shape})
-        if not LAZY: return expand_op(op_info)
-        return ClArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+        if not LAZY: return self._invoke(op_info)
+        return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
 
     def reshape(self, shape):
         if -1 in shape:
@@ -324,15 +306,15 @@ class ClArray(Array):
         shape = tuple(shape)
         assert prod(shape) == prod(self.shape), f"Can not reshape {self.shape} to {shape}"
         op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self.contiguous()}, args={"shape": shape})
-        if not LAZY: return reshape_op(op_info)
-        return ClArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+        if not LAZY: return self._invoke(op_info)
+        return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
 
     def permute(self, axes):
         assert sorted(list(axes)) == list(range(self.ndim))
         shape = tuple(self.shape[a] for a in axes)
         op_info = SimpleNamespace(operator=ViewOps.PERMUTE, operands={"A": self}, args={"axes": axes})
-        if not LAZY: return permute_op(op_info)
-        return ClArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+        if not LAZY: return self._invoke(op_info)
+        return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
 
     def squeeze(self, axis=None):
         if axis is None:
@@ -402,16 +384,11 @@ class ClArray(Array):
     @staticmethod
     def _invoke(op_info):
         optype = type(op_info.operator)
-        if optype is ElemwiseOps: 
-            return elemwise_op(op_info)
+        if optype is ElemwiseOps: return elemwise_op(op_info)
         elif optype is ReduceOps: return reduce_op(op_info)
         elif optype is ProcessingOps: return matmul_op(op_info)
-        elif optype is ViewOps:
-            if op_info.operator == ViewOps.EXPAND: return expand_op(op_info)
-            elif op_info.operator == ViewOps.RESHAPE: return reshape_op(op_info)
-            elif op_info.operator == ViewOps.PERMUTE: return permute_op(op_info)
-            else: raise ValueError(f"Invoke invalid operator {op}")
-        else: raise ValueError(f"Invoke invalid operator {op}")
+        elif optype is ViewOps: return view_op(op_info)
+        else: raise ValueError(f"Invoke invalid operator {op_info.operator}")
 
     def update_from_eager(self, eager):
         assert self.is_lazy
@@ -426,25 +403,24 @@ class ClArray(Array):
     def eager(self):
         def recursive_eager(node=None):
             if node is None: node = self
-            for name, dep_node in node.op_info.operands.items():
+            for dep_node in node.op_info.operands.values():
                 if dep_node.is_lazy:
-                    eager = recursive_eager(dep_node)
-                    dep_node.update_from_eager(eager)
-            return self._invoke(node.op_info)
+                    recursive_eager(dep_node)
+            eager = self._invoke(node.op_info)
+            node.update_from_eager(eager)
+
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer.build()
         if GRAPH: graphoptimizer.visualize()
         graphoptimizer.optimize()
         if GRAPH and OPT1: graphoptimizer.visualize("opt")
-        eager = recursive_eager()
-        self = self.update_from_eager(eager)
+        recursive_eager()
         return self
 
     def _update_contiguity(self):
         # https://github.com/numpy/numpy/blob/4c60b3263ac50e5e72f6a909e156314fc3c9cba0/numpy/core/src/multiarray/flagsobject.c#L115
         self.c_contiguous = self.f_contiguous = True
-        if not self.ndim:
-            return
+        if not self.ndim: return
         nitems = 1
         for i in range(self.ndim-1, -1, -1):
             if self.shape[i] != 1:
@@ -457,4 +433,3 @@ class ClArray(Array):
                 if self.strides[i] != nitems:
                     self.f_contiguous = False
                 nitems *= self.shape[i]
-

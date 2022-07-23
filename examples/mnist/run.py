@@ -89,6 +89,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--onepass", default=0, type=int)
     parser.add_argument("--eval", default=0, type=int)
-    parser.add_argument("--device", default="gpu", type=str)
+    default_device = "gpu" if BACKEND in ("opencl", "cuda") else "cpu"
+    parser.add_argument("--device", default=default_device, type=str)
     args = parser.parse_args()
     main(args)
