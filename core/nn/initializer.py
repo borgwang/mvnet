@@ -2,10 +2,10 @@ import numpy as np
 
 from core.tensor import Tensor
 from env import BACKEND
-from core.backend.numpy import NpArray as CPUArray
+from core.backend.numpy import NPArray as CPUArray
 GPUArray = type(None)
 if BACKEND == "opencl":
-    from core.backend.opencl import ClArray as GPUArray
+    from core.backend.opencl import CLArray as GPUArray
 elif BACKEND == "cuda":
     from core.backend.cuda import CuArray as GPUArray
 

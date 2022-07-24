@@ -1,8 +1,11 @@
+from ast import operator
 import copy
-from collections import namedtuple
+from types import SimpleNamespace
+from functools import lru_cache
 
 import numpy as np
 import pyopencl
+import pyopencl.clrandom
 
 from env import DEBUG, GRAPH, LAZY
 from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
@@ -21,8 +24,37 @@ ELEMWISE_MAPPING = {
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
-OpInfo = namedtuple("OpInfo", ["operator", "operands", "code", "ret_shape", "args"], defaults=[None, {}, None, None, None])
+class CLContext:
+    def __init__(self):
+        self.ctx, self.queue = None, None
+        platform = pyopencl.get_platforms()[0]
+        devices = platform.get_devices(device_type=pyopencl.device_type.GPU)
+        if len(devices) == 0:
+            devices = platform.get_devices(device_type=pyopencl.device_type.CPU)
+        self.ctx = pyopencl.Context(devices)
+        self.queue = pyopencl.CommandQueue(self.ctx)
+        self.rng = pyopencl.clrandom.PhiloxGenerator(self.ctx, seed=0)
 
+    @lru_cache(maxsize=None)
+    def build(self, name, program):
+        if DEBUG: print(f"[DEBUG] program {name}: \n {program}")
+        kernel = pyopencl.Program(self.ctx, program).build().__getattr__(name)
+        return lambda *args: kernel(self.queue, *args)
+
+    def alloc_local(self, size):
+        return pyopencl.LocalMemory(size)
+
+    def alloc_buffer(self, shape, dtype, hostbuf=None):
+        size = int(dtype().itemsize * prod(shape))
+        flags = pyopencl.mem_flags.READ_WRITE
+        if hostbuf is not None:
+            flags |= pyopencl.mem_flags.COPY_HOST_PTR
+        return pyopencl.Buffer(self.ctx, flags, size, hostbuf=hostbuf)
+
+    def enqueue(self, task, *args, **kwargs):
+        getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs)
+
+cl = CLContext()
 
 def elemwise_op(op_info):
     inp = list(op_info.operands.values())[0]
@@ -147,7 +179,7 @@ def reduce_op(op_info):
     kernelstat.log(op_info.operator)
     if GRAPH: e.wait()
     if n_grps > 1:
-        op_info = OpInfo(operator=op_info.operator, operands={"A": ret}, args=dict(axis=axis, keepdims=keepdims))
+        op_info = SimpleNamespace(operator=op_info.operator, operands={"A": ret}, args=dict(axis=axis, keepdims=keepdims))
         ret = reduce_op(op_info)
     return ret
 
@@ -175,28 +207,28 @@ def register_elemwise_op(func):
             inputs = inputs_
         op = func(*inputs)
         code = ELEMWISE_MAPPING[op]
-        op_info = OpInfo(operator=op, code=code, operands=dict(zip("AB", inputs)), args=kwargs)
+        op_info = SimpleNamespace(operator=op, code=code, operands=dict(zip("AB", inputs)), args=kwargs)
         if not LAZY or kwargs.get("eager", False):  # NOTE: for numpy() call
-            return ClArray._invoke(op_info)
-        return ClArray(shape=inputs[0].shape, dtype=inputs[0].dtype, op_info=op_info, is_lazy=True)
+            return CLArray._invoke(op_info)
+        return CLArray(shape=inputs[0].shape, dtype=inputs[0].dtype, op_info=op_info, is_lazy=True)
     return wrapper
 
 def register_reduce_op(func):
     def wrapper(x, axis=None, keepdims=False):
         op = func(x, axis=axis, keepdims=keepdims)
-        op_info = OpInfo(operator=op, operands={"A": x.contiguous()}, args=dict(axis=axis, keepdims=keepdims))
+        op_info = SimpleNamespace(operator=op, operands={"A": x.contiguous()}, args=dict(axis=axis, keepdims=keepdims))
         if not LAZY:
-            return ClArray._invoke(op_info)
+            return CLArray._invoke(op_info)
         ret_shape = () if axis is None else [d for i, d in enumerate(x.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
-        return ClArray(shape=tuple(ret_shape), dtype=x.dtype, op_info=op_info, is_lazy=True)
+        return CLArray(shape=tuple(ret_shape), dtype=x.dtype, op_info=op_info, is_lazy=True)
     return wrapper
 
 
-class ClArray(Array):
+class CLArray(Array):
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
         super().__init__(shape, dtype, op_info, is_lazy)
-        self.op_info = OpInfo() if op_info is None else op_info
+        self.op_info = SimpleNamespace(operator=None, operands={}) if op_info is None else op_info
         self.outdegree = 0
         self.is_visited = False
 
@@ -256,17 +288,17 @@ class ClArray(Array):
                 f"invalid shape for matmul {a.shape} @ {b.shape}"
         operands = {"A": a, "B": b}
         args = {"out": out}
-        op_info = OpInfo(operator=ProcessingOps.MATMUL, operands=operands, args=args, ret_shape=ret_shape)
-        arr = self._invoke(op_info) if not LAZY else ClArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
+        op_info = SimpleNamespace(operator=ProcessingOps.MATMUL, operands=operands, args=args, ret_shape=ret_shape)
+        arr = self._invoke(op_info) if not LAZY else CLArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
         for axis in squeezes:
             arr = arr.squeeze(axis)
         return arr
 
     # ##### View Ops #####
     def expand(self, shape):
-        op_info = OpInfo(operator=ViewOps.EXPAND, operands={"A": self}, args={"shape": shape})
+        op_info = SimpleNamespace(operator=ViewOps.EXPAND, operands={"A": self}, args={"shape": shape})
         if not LAZY: return self._invoke(op_info)
-        return ClArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+        return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
 
     def reshape(self, shape):
         if -1 in shape:
@@ -278,16 +310,16 @@ class ClArray(Array):
             shape = (*shape[:axis], size // infer, *shape[axis+1:])
         shape = tuple(shape)
         assert prod(shape) == prod(self.shape), f"Can not reshape {self.shape} to {shape}"
-        op_info = OpInfo(operator=ViewOps.RESHAPE, operands={"A": self.contiguous()}, args={"shape": shape})
+        op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self.contiguous()}, args={"shape": shape})
         if not LAZY: return self._invoke(op_info)
-        return ClArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+        return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
 
     def permute(self, axes):
         assert sorted(list(axes)) == list(range(self.ndim))
         shape = tuple(self.shape[a] for a in axes)
-        op_info = OpInfo(operator=ViewOps.PERMUTE, operands={"A": self}, args={"axes": axes})
+        op_info = SimpleNamespace(operator=ViewOps.PERMUTE, operands={"A": self}, args={"axes": axes})
         if not LAZY: return self._invoke(op_info)
-        return ClArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+        return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
 
     def squeeze(self, axis=None):
         if axis is None:
@@ -359,7 +391,7 @@ class ClArray(Array):
         optype = type(op_info.operator)
         if optype is ElemwiseOps: return elemwise_op(op_info)
         elif optype is ReduceOps: return reduce_op(op_info)
-        elif optype is ProcessingOps: return matmul_op(op_info)  # TODO: conv_op
+        elif optype is ProcessingOps: return matmul_op(op_info)
         elif optype is ViewOps: return view_op(op_info)
         else: raise ValueError(f"Invoke invalid operator {op_info.operator}")
 
@@ -370,7 +402,7 @@ class ClArray(Array):
             self.c_contiguous, self.f_contiguous = eager.c_contiguous, eager.f_contiguous
         self.buffer = eager.buffer
         self.is_lazy = False
-        self.op_info = OpInfo()
+        self.op_info = SimpleNamespace(operator=None, operands={})
         return self
 
     def eager(self):
@@ -385,8 +417,8 @@ class ClArray(Array):
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer.build()
         if GRAPH: graphoptimizer.visualize()
-        #graphoptimizer.optimize()
-        #if GRAPH and OPT1: graphoptimizer.visualize("opt")
+        graphoptimizer.optimize()
+        if GRAPH and OPT1: graphoptimizer.visualize("opt")
         recursive_eager()
         return self
 

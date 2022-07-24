@@ -162,6 +162,7 @@ def test_reshape_ops():
         t2.backward(np.ones(6))
         assert np.allclose(t1.grad.numpy(), [[1, 1, 1], [1, 1, 1]])
 
+"""
 def test_slice():
     devices = ("gpu", "cpu")
     for device in devices:
@@ -199,7 +200,6 @@ def test_slice():
         assert np.allclose(t[s].sum().numpy(), data[s].sum())
         assert np.allclose(t[s].sum(axis=1).numpy(), data[s].sum(axis=1))
         assert np.allclose(t[s].max(axis=0, keepdims=True).numpy(), data[s].max(axis=0, keepdims=True))
-        """
         # backprop
         data = np.arange(16).reshape((4, 4)).astype(np.float32)
         t = Tensor(data, requires_grad=True).to(device)
@@ -212,7 +212,7 @@ def test_slice():
         print(grad)
         assert np.allclose(t.grad.numpy(), grad)
         import pdb; pdb.set_trace()
-        """
+"""
 
 def test_minimal():
     np.random.seed(0)

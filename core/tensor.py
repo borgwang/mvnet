@@ -2,10 +2,10 @@ import core.autograd.ops as ops
 from env import GRAPH, BACKEND
 from core.dtype import float32
 
-from core.backend.numpy import NpArray as CPUArray
+from core.backend.numpy import NPArray as CPUArray
 GPUArray = type(None)
 if BACKEND == "opencl":
-    from core.backend.opencl import ClArray as GPUArray
+    from core.backend.opencl import CLArray as GPUArray
 elif BACKEND == "cuda":
     from core.backend.cuda import CuArray as GPUArray
 
@@ -20,6 +20,8 @@ class Tensor:
         self.requires_grad = requires_grad
         self.dependency = dependency
         self.degree = 0
+
+        self.bwdcost = 0
 
     def astensor(self, obj):
         if not isinstance(obj, self.__class__):

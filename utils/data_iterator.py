@@ -1,5 +1,3 @@
-"""Data Iterator class."""
-
 from collections import namedtuple
 
 import numpy as np
@@ -7,7 +5,6 @@ import numpy as np
 Batch = namedtuple("Batch", ["inputs", "targets"])
 
 class BatchIterator:
-
     def __init__(self, batch_size=32, shuffle=True):
         self.batch_size = batch_size
         self.shuffle = shuffle

@@ -27,7 +27,7 @@ class Array:
     def __repr__(self):
         clsname = self.__class__.__name__
         if self.is_lazy: clsname = "Lazy" + clsname
-        return (f"<{clsname} dtype={self.dtype} shape={self.shape} " f"strides={self.strides}>")
+        return (f"<{clsname} dtype={self.dtype} shape={self.shape} strides={self.strides}>")
 
     @property
     def size(self):

@@ -76,7 +76,6 @@ class GraphOptimizer:
             nid = id(node)
             if nid in G.nodes: return G
             G.add_node(nid)
-            # node attrubutes
             label = f"{node.shape}\n{nid}"
             if node.op_info.operator is not None: label += f"\n{node.op_info.operator.name}"
             #if hasattr(node.op_info, "code"): label += f"\n{node.op_info.code}"
@@ -84,7 +83,6 @@ class GraphOptimizer:
             G.nodes[nid]["shape"] = "box"
             G.nodes[nid]["style"] = "filled, dashed" if not node.is_lazy else "filled"
             G.nodes[nid]["fillcolor"] = color_map[type(node.op_info.operator)] if node.is_lazy else "#ffffff"
-            # edges
             for name, subnode in node.op_info.operands.items():
                 G = build_graph(subnode, G)
                 edge = (id(subnode), nid)
