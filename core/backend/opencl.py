@@ -7,13 +7,12 @@ import numpy as np
 import pyopencl
 import pyopencl.clrandom
 
-from env import DEBUG, GRAPH, LAZY
+from env import DEBUG, GRAPH, LAZY, OPT1
 from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
 from core.dtype import int32, float32
 from core.jit.graph import GraphOptimizer
 from utils.math import prod
 from utils.helper import kernelstat
-from utils.opencl import cl
 
 ELEMWISE_MAPPING = {
     ElemwiseOps.NOOP: "A", ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)", ElemwiseOps.LOG: "log(A)",
@@ -106,8 +105,8 @@ def matmul_op(op_info):
       __local float Alcl[{gs}][{gs}], Blcl[{gs}][{gs}];
       float acc = 0.0f;
       for (int t=0; t<K/{gs}; t++) {{
-        Alcl[i][j] = A[bs*A_s0+m*A_s1+(t*{gs}+j)*A_s2+a_ofst];
-        Blcl[i][j] = B[bs*B_s0+(t*{gs}+i)*B_s1+n*B_s2+b_ofst];
+        Alcl[i][j] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j)*A_s2 + a_ofst];
+        Blcl[i][j] = B[bs*B_s0 + (t*{gs}+i)*B_s1 + n*B_s2 + b_ofst];
         barrier(CLK_LOCAL_MEM_FENCE);
         for (int k=0; k<{gs}; k++) acc += Alcl[i][k] * Blcl[k][j];
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -191,7 +190,7 @@ def view_op(op_info):
         strides = [0 if s1 < s2 else inst.strides[i] for i, (s1, s2) in enumerate(zip(inst.shape, shape))]
     elif op_info.operator == ViewOps.RESHAPE:
         shape = op_info.args["shape"]
-        strides = (prod(shape[i+1:]) for i in range(len(shape))) if inst.c_contiguous else (prod(shape[:i]) for i in range(len(shape)))
+        strides = (prod(shape[i+1:]) if inst.c_contiguous else prod(shape[:i]) for i in range(len(shape)))
     elif op_info.operator == ViewOps.PERMUTE:
         axes = op_info.args["axes"]
         shape = tuple(inst.shape[a] for a in axes)
@@ -203,8 +202,7 @@ def view_op(op_info):
 def register_elemwise_op(func):
     def wrapper(*inputs, **kwargs):
         if len(inputs) > 1:
-            inputs_ = Array.broadcast(*inputs)
-            inputs = inputs_
+            inputs = Array.broadcast(*inputs)
         op = func(*inputs)
         code = ELEMWISE_MAPPING[op]
         op_info = SimpleNamespace(operator=op, code=code, operands=dict(zip("AB", inputs)), args=kwargs)
@@ -315,7 +313,7 @@ class CLArray(Array):
         return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
 
     def permute(self, axes):
-        assert sorted(list(axes)) == list(range(self.ndim))
+        assert sorted(list(axes)) == list(range(self.ndim)), f"Invalid axes {axes}"
         shape = tuple(self.shape[a] for a in axes)
         op_info = SimpleNamespace(operator=ViewOps.PERMUTE, operands={"A": self}, args={"axes": axes})
         if not LAZY: return self._invoke(op_info)
@@ -417,7 +415,7 @@ class CLArray(Array):
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer.build()
         if GRAPH: graphoptimizer.visualize()
-        graphoptimizer.optimize()
+        if OPT1: graphoptimizer.optimize()
         if GRAPH and OPT1: graphoptimizer.visualize("opt")
         recursive_eager()
         return self

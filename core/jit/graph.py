@@ -67,7 +67,7 @@ class GraphOptimizer:
         pass
 
     def optimize(self):
-        if OPT1: self._merge_elemwise(node=self.root)
+        self._merge_elemwise(node=self.root)
 
     def visualize(self, suffix=""):
         color_map = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}

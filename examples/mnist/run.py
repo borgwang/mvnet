@@ -35,15 +35,18 @@ def prepare_dataset(data_dir):
     with gzip.open(save_path, "rb") as f:
         return pickle.load(f, encoding="latin1")
 
+"""
 import line_profiler, signal, sys, atexit
 profile = line_profiler.LineProfiler()
 def handle_exit(*args):
     profile.print_stats()
+    sys.exit()
 signal.signal(signal.SIGTERM, handle_exit)
 signal.signal(signal.SIGINT, handle_exit)
 atexit.register(handle_exit)
 
 @profile
+"""
 def main(args):
     if args.seed >= 0:
         np.random.seed(args.seed)
@@ -58,10 +61,10 @@ def main(args):
     test_y = Tensor(test_y)
 
     net = SequentialNet(
-            Dense(256), ReLU(),
-            Dense(128), ReLU(),
-            Dense(64), ReLU(),
-            Dense(32), ReLU(),
+            #Dense(256), ReLU(),
+            #Dense(128), ReLU(),
+            #Dense(64), ReLU(),
+            #Dense(32), ReLU(),
             Dense(10)).to(args.device)
     #optim = Adam(net.get_parameters(), lr=args.lr)
     optim = SGD(net.get_parameters(), lr=args.lr)
