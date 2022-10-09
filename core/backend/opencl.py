@@ -7,7 +7,7 @@ import numpy as np
 import pyopencl
 import pyopencl.clrandom
 
-from env import DEBUG, GRAPH, LAZY, OPT_MERGE_ELEMWISE, INSTANT_VIEWOP2
+from env import DEBUG, GRAPH, LAZY, OPT_MERGE_ELEMWISE
 from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
 from core.dtype import int32, float32
 from core.jit.graph import GraphOptimizer
@@ -194,6 +194,7 @@ def view_op(op_info):
         strides = tuple(inst.strides[a] for a in axes)
     inst.shape, inst.strides = tuple(shape), tuple(strides)
     inst.c_contiguous, inst.f_contiguous = inst._calculate_contiguity()
+    inst.op_info = op_info
     return inst
 
 def register_elemwise_op(func):
@@ -292,14 +293,9 @@ class CLArray(Array):
     # ##### View Ops #####
     def expand(self, shape):
         op_info = SimpleNamespace(operator=ViewOps.EXPAND, operands={"A": self}, args={"shape": shape})
-        if INSTANT_VIEWOP2:
-            self = view_op(op_info)
-            op_info = SimpleNamespace(operator=ViewOps.EXPAND, operands={"A": self}, args={"shape": shape})
-            ret = CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
-            ret.c_contiguous, ret.f_contiguous = self._calculate_contiguity()
-            return ret
-        if not LAZY: return self._invoke(op_info)
-        return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+        inst = view_op(op_info)
+        #inst.op_info = op_info
+        return inst
 
     def reshape(self, shape):
         # asd
@@ -312,33 +308,20 @@ class CLArray(Array):
             shape = (*shape[:axis], size // infer, *shape[axis+1:])
         shape = tuple(shape)
         assert prod(shape) == prod(self.shape), f"Can not reshape {self.shape} to {shape}"
-        if INSTANT_VIEWOP2:
-            print(self.c_contiguous, self.f_contiguous)
-            if not self.c_contiguous and not self.f_contiguous:
-                self = self.contiguous()
-            op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self}, args={"shape": shape})
-            self = view_op(op_info)
-            op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self}, args={"shape": shape})
-            ret = CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
-            ret.c_contiguous, ret.f_contiguous = self._calculate_contiguity()
-            return ret
-        #if LAZY: self = self.contiguous()
-        op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self.contiguous()}, args={"shape": shape})
-        if not LAZY: return self._invoke(op_info)
-        return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+        if not self.c_contiguous and not self.f_contiguous:
+            self = self.contiguous()
+        op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self}, args={"shape": shape})
+        inst = view_op(op_info)
+        #inst.op_info = op_info
+        return inst
 
     def permute(self, axes):
         assert sorted(list(axes)) == list(range(self.ndim)), f"Invalid axes {axes}"
         shape = tuple(self.shape[a] for a in axes)
         op_info = SimpleNamespace(operator=ViewOps.PERMUTE, operands={"A": self}, args={"axes": axes})
-        if INSTANT_VIEWOP2:
-            self = view_op(op_info)
-            op_info = SimpleNamespace(operator=ViewOps.PERMUTE, operands={"A": self}, args={"axes": axes})
-            ret = CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
-            ret.c_contiguous, ret.f_contiguous = self._calculate_contiguity()
-            return ret
-        if not LAZY: return self._invoke(op_info)
-        return CLArray(shape=shape, dtype=self.dtype, op_info=op_info, is_lazy=True)
+        inst = view_op(op_info)
+        #inst.op_info = op_info
+        return inst
 
     def squeeze(self, axis=None):
         if axis is None:
@@ -411,15 +394,11 @@ class CLArray(Array):
         if optype is ElemwiseOps: return elemwise_op(op_info)
         elif optype is ReduceOps: return reduce_op(op_info)
         elif optype is ProcessingOps: return matmul_op(op_info)
-        #elif optype is ViewOps: return view_op(op_info)
-        elif optype is ViewOps: return list(op_info.operands.values())[0]
+        elif optype is ViewOps: return list(op_info.operands.values())[0]  # TODO: better way?
         else: raise ValueError(f"Invoke invalid operator {op_info.operator}")
 
     def update_from_eager(self, eager):
         assert self.is_lazy
-        if type(self.op_info.operator) == ViewOps:
-            self.strides, self.shape = eager.strides, eager.shape
-            self.c_contiguous, self.f_contiguous = eager.c_contiguous, eager.f_contiguous
         self.buffer = eager.buffer
         self.is_lazy = False
         self.op_info = SimpleNamespace(operator=None, operands={})

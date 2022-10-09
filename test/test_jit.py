@@ -185,14 +185,14 @@ def test_graph_optimizer():
 
 
 def test_graph_optimizer_remove_contiguous():
-    assert LAZY, "LAZY disabled"
-    a_np = np.random.normal(0, 1, (3, 4, 2)).astype(np.float32)
-    b_np = np.random.normal(0, 1, (3, 4, 2)).astype(np.float32)
-    a = Tensor(a_np).to("gpu")
-    b = Tensor(b_np).to("gpu")
-    c = a + b
-    d = c.permute((1, 0, 2))
-    #d = c
-    e = d.reshape((1, 2, 3, 4))
-    e.array.eager()
+    if LAZY:
+        a_np = np.random.normal(0, 1, (3, 4, 2)).astype(np.float32)
+        b_np = np.random.normal(0, 1, (3, 4, 2)).astype(np.float32)
+        a = Tensor(a_np).to("gpu")
+        b = Tensor(b_np).to("gpu")
+        c = a + b
+        d = c.permute((1, 0, 2))
+        #d = c
+        e = d.reshape((1, 2, 3, 4))
+        e.array.eager()
 

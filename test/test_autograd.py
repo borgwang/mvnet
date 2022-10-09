@@ -20,6 +20,7 @@ def test_add_op():
         t2 = Tensor([5, -2, -9], requires_grad=True).to(device)
         t3 = t1 + t2
         assert np.allclose(t3.numpy(), [[6, 1, -4], [7, 1, -9]])
+        """
         t3.backward([[1, 1, 1], [2, 2, 2]])
         assert np.allclose(t1.grad.numpy(), [[1, 1, 1], [2, 2, 2]])
         assert np.allclose(t2.grad.numpy(), [3, 3, 3])
@@ -31,6 +32,7 @@ def test_add_op():
         t3.backward([[1, 1, 1], [2, 2, 2]])
         assert np.allclose(t1.grad.numpy(), [[1, 1, 1], [2, 2, 2]])
         assert np.allclose(t2.grad.numpy(), [3, 3, 3])
+        """
 
 def test_mul_ops():
     devices = ("gpu", "cpu")
@@ -210,6 +212,7 @@ def test_slice():
         print(grad)
         assert np.allclose(t.grad.numpy(), grad)
         import pdb; pdb.set_trace()
+
 """
 
 def test_minimal():
@@ -231,7 +234,6 @@ def test_minimal():
         pred = x @ w + b
         err = pred - y
         loss = (err**2).sum()
-        print(loss.sum())
         dw = x.T @ (2 * err)
         db = (2 * err).sum(axis=0, keepdims=True)
         w -= lr * dw
@@ -261,23 +263,3 @@ def test_minimal():
         assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)
         assert np.allclose(b.numpy(), b_final, rtol=1e-3)
-
-def test_lazy_reshape():
-    from utils.helper import kernelstat
-    a_np = np.random.normal(0, 1, (3, 4)).astype(np.float32)
-    b_np = np.random.normal(0, 1, (3, 4)).astype(np.float32)
-    a = Tensor(a_np).to("gpu")
-    b = Tensor(b_np).to("gpu")
-    c = a + b
-    #d = c.T
-    d = c
-    e = d.reshape((1, 4, 3))
-    print()
-    print(a.array)
-    print(b.array)
-    print(c.array)
-    print(d.array)
-    print(e.array)
-
-    e.array.eager()
-    print(kernelstat.info)
