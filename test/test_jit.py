@@ -2,7 +2,7 @@ import runtime_path  # isort:skip
 
 import numpy as np
 
-from env import LAZY, GRAPH, OPT1
+from env import LAZY, GRAPH, OPT_MERGE_ELEMWISE
 from core.tensor import Tensor
 from utils.helper import kernelstat
 from core.backend.base import ElemwiseOps, ReduceOps, ProcessingOps, ViewOps, CreationOps
@@ -113,7 +113,7 @@ def _test_lazy_forward():
     print(kernelstat.info)
     if LAZY:
         assert kernelstat.get(ProcessingOps)["MATMUL"] == 0
-        if not OPT1:
+        if not OPT_MERGE_ELEMWISE:
             assert sum(kernelstat.get(ElemwiseOps).values()) == 4 + 3
         else:
             assert sum(kernelstat.get(ElemwiseOps).values()) == 1 + 3
@@ -182,4 +182,17 @@ def test_graph_optimizer():
     loss_np = np.sum(np.exp(np.log((pred_np - y_np)** 2)))
     loss_np = np.sum((pred_np - y_np)**2)
     check_tensor(loss, loss_np)
+
+
+def test_graph_optimizer_remove_contiguous():
+    assert LAZY, "LAZY disabled"
+    a_np = np.random.normal(0, 1, (3, 4, 2)).astype(np.float32)
+    b_np = np.random.normal(0, 1, (3, 4, 2)).astype(np.float32)
+    a = Tensor(a_np).to("gpu")
+    b = Tensor(b_np).to("gpu")
+    c = a + b
+    d = c.permute((1, 0, 2))
+    #d = c
+    e = d.reshape((1, 2, 3, 4))
+    e.array.eager()
 

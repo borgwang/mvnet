@@ -1,5 +1,3 @@
-"""test unit for autograd"""
-
 import runtime_path  # isort:skip
 
 import numpy as np
@@ -215,26 +213,29 @@ def test_slice():
 """
 
 def test_minimal():
+    from utils.helper import kernelstat
     np.random.seed(0)
-    n_epoch = 2
+    n_epoch = 1
+    lr = 0.0001
 
     BS = 2**6
     idim = 2**8
     odim = 2**6
-    x_np = np.random.normal(0, 1, (BS, idim)).astype(np.float32)
-    y_np = np.random.normal(0, 1, (BS, odim)).astype(np.float32)
-    w_np = np.random.normal(0, 1, (idim, odim)).astype(np.float32)
-    b_np = np.zeros((1, odim)).astype(np.float32)
+    x_np = np.random.normal(0, 1, (BS, idim)).astype(np.float32)  # (64, 256)
+    y_np = np.random.normal(0, 1, (BS, odim)).astype(np.float32)  # (64, 64)
+    w_np = np.random.normal(0, 1, (idim, odim)).astype(np.float32)  # (256, 64)
+    b_np = np.zeros((1, odim)).astype(np.float32)  # (1, 64)
 
     x, y, w, b = x_np.copy(), y_np.copy(), w_np.copy(), b_np.copy()
     for epoch in range(n_epoch):
         pred = x @ w + b
-        err = (pred - y)
+        err = pred - y
         loss = (err**2).sum()
+        print(loss.sum())
         dw = x.T @ (2 * err)
         db = (2 * err).sum(axis=0, keepdims=True)
-        w -= 0.0001 * dw
-        b -= 0.0001 * db
+        w -= lr * dw
+        b -= lr * db
     loss_final, w_final, b_final = loss, w, b
 
     devices = ("gpu",)
@@ -247,10 +248,13 @@ def test_minimal():
             w.zero_grad()
             b.zero_grad()
             pred = x @ w + b
-            loss = ((pred - y)**2).sum()
+            err = pred - y
+            loss = (err ** 2).sum()
+            #print(kernelstat.info)
+            #import pdb; pdb.set_trace()
             loss.backward()
-            w -= 0.0001 * w.grad
-            b -= 0.0001 * b.grad
+            w -= lr * w.grad
+            b -= lr * b.grad
             if LAZY:
                 w.array = w.array.eager()
                 b.array = b.array.eager()
@@ -258,3 +262,22 @@ def test_minimal():
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)
         assert np.allclose(b.numpy(), b_final, rtol=1e-3)
 
+def test_lazy_reshape():
+    from utils.helper import kernelstat
+    a_np = np.random.normal(0, 1, (3, 4)).astype(np.float32)
+    b_np = np.random.normal(0, 1, (3, 4)).astype(np.float32)
+    a = Tensor(a_np).to("gpu")
+    b = Tensor(b_np).to("gpu")
+    c = a + b
+    #d = c.T
+    d = c
+    e = d.reshape((1, 4, 3))
+    print()
+    print(a.array)
+    print(b.array)
+    print(c.array)
+    print(d.array)
+    print(e.array)
+
+    e.array.eager()
+    print(kernelstat.info)

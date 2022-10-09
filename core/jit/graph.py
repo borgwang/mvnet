@@ -1,6 +1,6 @@
 import os
 import networkx as nx
-from env import OPT1, DEBUG
+from env import DEBUG
 from utils.helper import varnamegetter
 from core.backend.base import ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
 
@@ -31,10 +31,15 @@ class GraphOptimizer:
         _build(node)
         _reset_visit(node)
 
+    def _remove_contiguous(self, node):
+        operator = node.op_info.operator
+        if operator == ElemwiseOps.NOOP:
+            assert len(node.op_info.operands.values()) == 1, "ElemwiseOps.NOOP should have only one input"
+
     def _merge_elemwise(self, node):
         """element-wise ops (unary or binary) can be merged, thus reduce kernel calls. Consider the following computational graph.
         `a = b + c; d = a * e; ret = exp(d)`
-        It has three element-wise kernel ops, i.e. add, mul and exp. We can merge that into a single kernel call, i.e. exp((b+c)*e).
+        Three element-wise kernel ops can be merged into one single kernel call, i.e. ret = exp((b + c) * e).
         """
         operands = {}
         operator = node.op_info.operator
@@ -67,7 +72,7 @@ class GraphOptimizer:
         pass
 
     def optimize(self):
-        self._merge_elemwise(node=self.root)
+        pass
 
     def visualize(self, suffix=""):
         color_map = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}

@@ -15,7 +15,6 @@ class Optimizer:
             for name, param in param_dict.items():
                 param.array += self._get_step(param.grad, key=f"{i}-{name}")
                 if LAZY: param.array = param.array.eager()
-                import pdb; pdb.set_trace()
 
     def _get_step(self, grad):
         raise NotImplementedError
