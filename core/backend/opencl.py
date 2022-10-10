@@ -179,7 +179,6 @@ def reduce_op(op_info):
     return ret
 
 def view_op(op_info):
-    #asd
     x = list(op_info.operands.values())[0]
     inst = copy.copy(x)
     if op_info.operator == ViewOps.EXPAND:
@@ -194,7 +193,6 @@ def view_op(op_info):
         strides = tuple(inst.strides[a] for a in axes)
     inst.shape, inst.strides = tuple(shape), tuple(strides)
     inst.c_contiguous, inst.f_contiguous = inst._calculate_contiguity()
-    inst.op_info = op_info
     return inst
 
 def register_elemwise_op(func):
@@ -212,7 +210,8 @@ def register_elemwise_op(func):
 def register_reduce_op(func):
     def wrapper(x, axis=None, keepdims=False):
         op = func(x, axis=axis, keepdims=keepdims)
-        op_info = SimpleNamespace(operator=op, operands={"A": x.contiguous()}, args=dict(axis=axis, keepdims=keepdims))
+        x = x.contiguous() if not x.c_contiguous else x
+        op_info = SimpleNamespace(operator=op, operands={"A": x}, args=dict(axis=axis, keepdims=keepdims))
         if not LAZY:
             return CLArray._invoke(op_info)
         ret_shape = () if axis is None else [d for i, d in enumerate(x.shape) if i != axis]
@@ -293,12 +292,11 @@ class CLArray(Array):
     # ##### View Ops #####
     def expand(self, shape):
         op_info = SimpleNamespace(operator=ViewOps.EXPAND, operands={"A": self}, args={"shape": shape})
-        inst = view_op(op_info)
-        #inst.op_info = op_info
-        return inst
+        arr = view_op(op_info)
+        if LAZY: arr.op_info = op_info
+        return arr
 
     def reshape(self, shape):
-        # asd
         if -1 in shape:
             size = prod(self.shape)
             assert shape.count(-1) <= 1, "Only one dimension can be inferred"
@@ -311,17 +309,17 @@ class CLArray(Array):
         if not self.c_contiguous and not self.f_contiguous:
             self = self.contiguous()
         op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self}, args={"shape": shape})
-        inst = view_op(op_info)
-        #inst.op_info = op_info
-        return inst
+        arr = view_op(op_info)
+        if LAZY: arr.op_info = op_info
+        return arr
 
     def permute(self, axes):
         assert sorted(list(axes)) == list(range(self.ndim)), f"Invalid axes {axes}"
         shape = tuple(self.shape[a] for a in axes)
         op_info = SimpleNamespace(operator=ViewOps.PERMUTE, operands={"A": self}, args={"axes": axes})
-        inst = view_op(op_info)
-        #inst.op_info = op_info
-        return inst
+        arr = view_op(op_info)
+        if LAZY: arr.op_info = op_info
+        return arr
 
     def squeeze(self, axis=None):
         if axis is None:

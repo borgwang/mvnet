@@ -61,13 +61,13 @@ def main(args):
     test_y = Tensor(test_y)
 
     net = SequentialNet(
-            #Dense(256), ReLU(),
-            #Dense(128), ReLU(),
-            #Dense(64), ReLU(),
-            #Dense(32), ReLU(),
+            Dense(256), ReLU(),
+            Dense(128), ReLU(),
+            Dense(64), ReLU(),
+            Dense(32), ReLU(),
             Dense(10)).to(args.device)
-    #optim = Adam(net.get_parameters(), lr=args.lr)
-    optim = SGD(net.get_parameters(), lr=args.lr)
+    optim = Adam(net.get_parameters(), lr=args.lr)
+    #optim = SGD(net.get_parameters(), lr=args.lr)
     loss_fn = SoftmaxCrossEntropyLoss()
 
     iterator = BatchIterator(batch_size=args.batch_size)
@@ -79,12 +79,13 @@ def main(args):
             x, y = batch.inputs.to(args.device), batch.targets.to(args.device)
             pred = net.forward(x)
             loss = loss_fn(pred, y)
-            loss.backward()
-            optim.step()
-            if args.onepass:
+            if args.profile_forward:
+                print(loss.array.eager())
                 print(kernelstat.info)
                 print("total kernel call: ", kernelstat.total())
                 sys.exit()
+            loss.backward()
+            optim.step()
         print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))
         if args.eval:
             test_pred = net.forward(test_x).numpy()
@@ -97,13 +98,13 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_ep", default=50, type=int)
+    parser.add_argument("--num_ep", default=10, type=int)
     parser.add_argument("--data_dir", default="./examples/mnist/data", type=str)
     parser.add_argument("--lr", default=1e-3, type=float)
     parser.add_argument("--batch_size", default=128, type=int)
     parser.add_argument("--seed", default=0, type=int)
 
-    parser.add_argument("--onepass", default=0, type=int)
+    parser.add_argument("--profile_forward", default=0, type=int)
     parser.add_argument("--eval", default=0, type=int)
     default_device = "gpu" if BACKEND in ("opencl", "cuda") else "cpu"
     parser.add_argument("--device", default=default_device, type=str)

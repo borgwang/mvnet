@@ -240,7 +240,7 @@ def test_minimal():
         b -= lr * db
     loss_final, w_final, b_final = loss, w, b
 
-    devices = ("gpu",)
+    devices = ("gpu", "cpu")
     for device in devices:
         x = Tensor(x_np).to(device)
         y = Tensor(y_np).to(device)
@@ -252,12 +252,10 @@ def test_minimal():
             pred = x @ w + b
             err = pred - y
             loss = (err ** 2).sum()
-            #print(kernelstat.info)
-            #import pdb; pdb.set_trace()
             loss.backward()
             w -= lr * w.grad
             b -= lr * b.grad
-            if LAZY:
+            if LAZY and device == "gpu":
                 w.array = w.array.eager()
                 b.array = b.array.eager()
         assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)

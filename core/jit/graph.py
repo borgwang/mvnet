@@ -31,11 +31,6 @@ class GraphOptimizer:
         _build(node)
         _reset_visit(node)
 
-    def _remove_contiguous(self, node):
-        operator = node.op_info.operator
-        if operator == ElemwiseOps.NOOP:
-            assert len(node.op_info.operands.values()) == 1, "ElemwiseOps.NOOP should have only one input"
-
     def _merge_elemwise(self, node):
         """element-wise ops (unary or binary) can be merged, thus reduce kernel calls. Consider the following computational graph.
         `a = b + c; d = a * e; ret = exp(d)`
@@ -65,13 +60,7 @@ class GraphOptimizer:
         node.is_visited = True
         node.op_info.operands = operands
 
-    def _simplify_arithmetic(self):
-        pass
-
     def _operation_fusion(self):
-        pass
-
-    def optimize(self):
         pass
 
     def visualize(self, suffix=""):
@@ -81,13 +70,14 @@ class GraphOptimizer:
             nid = id(node)
             if nid in G.nodes: return G
             G.add_node(nid)
+            #label = f"{node.shape}\n{node.strides}\n{nid}"
             label = f"{node.shape}\n{nid}"
             if node.op_info.operator is not None: label += f"\n{node.op_info.operator.name}"
             #if hasattr(node.op_info, "code"): label += f"\n{node.op_info.code}"
             G.nodes[nid]["label"] = label
             G.nodes[nid]["shape"] = "box"
-            G.nodes[nid]["style"] = "filled, dashed" if not node.is_lazy else "filled"
-            G.nodes[nid]["fillcolor"] = color_map[type(node.op_info.operator)] if node.is_lazy else "#ffffff"
+            G.nodes[nid]["style"] = "filled, dashed" if node.is_lazy else "filled"
+            G.nodes[nid]["fillcolor"] = color_map.get(type(node.op_info.operator), "#ffffff")
             for name, subnode in node.op_info.operands.items():
                 G = build_graph(subnode, G)
                 edge = (id(subnode), nid)

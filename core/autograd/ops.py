@@ -125,11 +125,19 @@ def log(arr):
     grad_fn = lambda g: g / arr
     return arr.log(), grad_fn
 
+"""
 @autograd_ops
 def relu(arr):
     mask = arr > 0
     grad_fn = lambda g: mask * g
     return mask * arr, grad_fn
+"""
+
+@autograd_ops
+def relu(arr):
+    result = arr.relu()
+    grad_fn = lambda g: g.drelu(arr)
+    return result, grad_fn
 
 @autograd_ops
 def reshape(arr, shape):
