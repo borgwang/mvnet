@@ -7,7 +7,7 @@ import numpy as np
 import pyopencl
 import pyopencl.clrandom
 
-from env import DEBUG, GRAPH, LAZY, OPT_MERGE_ELEMWISE
+from env import DEBUG, GRAPH, LAZY, OPT_MERGE_ELEMWISE, OPT_CONSTANT_FOLDING
 from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
 from core.dtype import int32, float32
 from core.jit.graph import GraphOptimizer
@@ -61,6 +61,23 @@ def elemwise_op(op_info):
         f"Invalid input shape for elemwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
     a = inp[list(inp.keys())[0]]
     ret = op_info.args["out"] if op_info.args.get("out", None) is not None else a.__class__(shape=a.shape, dtype=a.dtype)
+
+    # TODO: move to graph optimizer
+    if OPT_CONSTANT_FOLDING:
+        code = op_info.code
+        todelete = []
+        folding_flag = False
+        for name, arr in inp.items():
+            if arr.constant_flag and arr.constant_value is not None:
+                newcode = code.replace(name, f"{arr.constant_value}f")
+                #print(id(arr), arr.constant_value)
+                #print(f"{code} -> {newcode}")
+                todelete.append(name)
+                code = newcode
+                folding_flag = True
+        op_info.code = code
+        for name in todelete: del inp[name]
+
     args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
     args += "".join(f"int {name}_ofst, " for name in inp)
     args += "".join(f"__global const float *inp_{name}, " for name in inp)
@@ -237,10 +254,17 @@ class CLArray(Array):
                     self.shape = data.shape
                 assert self.shape is not None, "Array shape is None!"
                 self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
+
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(self.ndim))
         self.c_contiguous, self.f_contiguous = self._calculate_contiguity()
         self.offset = 0  # offset relative to the beginning of the buffer
+
+        if OPT_CONSTANT_FOLDING:
+            if self.ndim == 0 or (self.ndim == 1 and self.shape == (1,)):
+                self.constant_flag = True
+                if not self.is_lazy and not isinstance(data, pyopencl.Buffer) and data is not None:
+                    self.constant_value = float(data)
 
     @property
     def size(self):
@@ -400,6 +424,8 @@ class CLArray(Array):
         self.buffer = eager.buffer
         self.is_lazy = False
         self.op_info = SimpleNamespace(operator=None, operands={})
+        self.constant_flag = eager.constant_flag
+        self.constant_value = eager.constant_value
         return self
 
     def eager(self):
@@ -414,7 +440,8 @@ class CLArray(Array):
         graphoptimizer.build()
         if GRAPH: graphoptimizer.visualize()
         if OPT_MERGE_ELEMWISE: graphoptimizer._merge_elemwise(node=self)
-        if GRAPH and OPT_MERGE_ELEMWISE: graphoptimizer.visualize("opt")
+        if OPT_CONSTANT_FOLDING: graphoptimizer._constant_folding(node=self)
+        if GRAPH: graphoptimizer.visualize("opt")
         recursive_eager(self)
         return self
 
@@ -436,4 +463,3 @@ class CLArray(Array):
                     f_contiguous = False
                 nitems *= self.shape[i]
         return c_contiguous, f_contiguous
-

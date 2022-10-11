@@ -218,7 +218,7 @@ def test_slice():
 def test_minimal():
     from utils.helper import kernelstat
     np.random.seed(0)
-    n_epoch = 1
+    n_epoch = 300
     lr = 0.0001
 
     BS = 2**6

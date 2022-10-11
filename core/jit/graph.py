@@ -1,6 +1,6 @@
 import os
 import networkx as nx
-from env import DEBUG
+from env import DEBUG, OPT_CONSTANT_FOLDING
 from utils.helper import varnamegetter
 from core.backend.base import ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
 
@@ -63,6 +63,9 @@ class GraphOptimizer:
     def _operation_fusion(self):
         pass
 
+    def _constant_folding(self, node):
+        pass
+
     def visualize(self, suffix=""):
         color_map = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}
         def build_graph(node, G):
@@ -70,8 +73,8 @@ class GraphOptimizer:
             nid = id(node)
             if nid in G.nodes: return G
             G.add_node(nid)
-            #label = f"{node.shape}\n{node.strides}\n{nid}"
             label = f"{node.shape}\n{nid}"
+            if OPT_CONSTANT_FOLDING: label += f"\n{node.constant_flag}\n{node.constant_value}"
             if node.op_info.operator is not None: label += f"\n{node.op_info.operator.name}"
             #if hasattr(node.op_info, "code"): label += f"\n{node.op_info.code}"
             G.nodes[nid]["label"] = label

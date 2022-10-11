@@ -196,3 +196,58 @@ def test_graph_optimizer_remove_contiguous():
         e = d.reshape((1, 2, 3, 4))
         e.array.eager()
 
+def test_graph_optimizer_constant_folding():
+    from utils.helper import kernelstat
+    np.random.seed(0)
+    n_epoch = 300
+    lr = 0.0001
+
+    BS = 2**6
+    idim = 2**8
+    odim = 2**6
+    x_np = np.random.normal(0, 1, (BS, idim)).astype(np.float32)  # (64, 256)
+    y_np = np.random.normal(0, 1, (BS, odim)).astype(np.float32)  # (64, 64)
+    w_np = np.random.normal(0, 1, (idim, odim)).astype(np.float32)  # (256, 64)
+    b_np = np.zeros((1, odim)).astype(np.float32)  # (1, 64)
+
+    x, y, w, b = x_np.copy(), y_np.copy(), w_np.copy(), b_np.copy()
+    for epoch in range(n_epoch):
+        pred = x @ w + b
+        err = pred - y
+        loss = (err**2).sum()
+        dw = x.T @ (2 * err)
+        db = (2 * err).sum(axis=0, keepdims=True)
+        w -= lr * dw
+        b -= lr * db
+    loss_final, w_final, b_final = loss, w, b
+
+    import time
+    st = time.monotonic()
+    devices = ("gpu",)
+    for device in devices:
+        x = Tensor(x_np).to(device)
+        y = Tensor(y_np).to(device)
+        w = Tensor(w_np, requires_grad=True).to(device)
+        b = Tensor(b_np, requires_grad=True).to(device)
+        for epoch in range(n_epoch):
+            w.zero_grad()
+            b.zero_grad()
+            pred = x @ w + b
+            err = pred - y
+            loss = (err ** 2).sum()
+            #print("!!!!!", loss.array.numpy())
+            #print(kernelstat.info)
+            #return
+            loss.backward()
+            w -= lr * w.grad
+            b -= lr * b.grad
+            if LAZY and device == "gpu":
+                w.array = w.array.eager()
+                b.array = b.array.eager()
+        assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
+        assert np.allclose(w.numpy(), w_final, rtol=1e-3)
+        assert np.allclose(b.numpy(), b_final, rtol=1e-3)
+    print("!!!!!!!!", time.monotonic() - st)
+    print(kernelstat.info)
+    print(kernelstat.total())
+

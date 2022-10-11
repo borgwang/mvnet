@@ -95,6 +95,7 @@ def test_elemwise_op():
     # on broadcasted array
     shape = (1,)
     nparr = rnd(shape)
+    arr = CLArray(nparr)
     arr = CLArray(nparr).reshape((1, 1, 1)).expand((3, 4, 5))
     nparr = np.broadcast_to(nparr.reshape((1, 1, 1)), (3, 4, 5))
     check_array(arr, nparr)
