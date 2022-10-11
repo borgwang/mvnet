@@ -71,7 +71,7 @@ class Tensor:
     for op in ("neg", "getitem"):
         exec(f"def __{op}__(self, *args, **kwargs): return ops.{op}(self, *args, **kwargs)")
 
-    for op in ("sum", "max", "log", "exp", "relu", "reshape", "flatten", "permute"):
+    for op in ("sum", "max", "log", "exp", "relu", "expand", "squeeze", "reshape", "flatten", "permute"):
         exec(f"def {op}(self, *args, **kwargs): return ops.{op}(self, *args, **kwargs)")
 
     @property

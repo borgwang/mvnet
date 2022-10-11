@@ -57,26 +57,11 @@ cl = CLContext()
 
 def elemwise_op(op_info):
     inp = op_info.operands
-    assert len(set([tuple(x.shape) for x in inp.values()])) == 1, \
+    assert len(set([tuple(x.shape) for x in inp.values()])) <= 1, \
         f"Invalid input shape for elemwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
-    a = inp[list(inp.keys())[0]]
-    ret = op_info.args["out"] if op_info.args.get("out", None) is not None else a.__class__(shape=a.shape, dtype=a.dtype)
 
-    # TODO: move to graph optimizer
-    if OPT_CONSTANT_FOLDING:
-        code = op_info.code
-        todelete = []
-        folding_flag = False
-        for name, arr in inp.items():
-            if arr.constant_flag and arr.constant_value is not None:
-                newcode = code.replace(name, f"{arr.constant_value}f")
-                #print(id(arr), arr.constant_value)
-                #print(f"{code} -> {newcode}")
-                todelete.append(name)
-                code = newcode
-                folding_flag = True
-        op_info.code = code
-        for name in todelete: del inp[name]
+    shape, dtype = op_info.args["shape"], op_info.args["dtype"]
+    ret = op_info.args["out"] if op_info.args.get("out", None) is not None else CLArray(shape=shape, dtype=dtype)
 
     args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
     args += "".join(f"int {name}_ofst, " for name in inp)
@@ -92,7 +77,7 @@ def elemwise_op(op_info):
     args = [int32(s) for ss in zip(*[x.strides for x in (list(inp.values())+[ret])]) for s in ss]
     args += [int32(x.offset) for x in inp.values()]
     args += [x.buffer for x in inp.values()]
-    e = op((prod(a.shape),), None, *args, ret.buffer)
+    e = op((prod(shape),), None, *args, ret.buffer)
     kernelstat.log(op_info.operator)
     if GRAPH: e.wait()
     return ret
@@ -105,7 +90,7 @@ def matmul_op(op_info):
         ret = op_info.args["out"]
         assert ret.c_contiguous and ret.shape == ret_shape
     else:
-        ret = a.__class__(shape=ret_shape, dtype=a.dtype)
+        ret = CLArray(shape=ret_shape, dtype=a.dtype)
     BS, M, K, N = prod(a.shape[:-2]), a.shape[-2], a.shape[-1], b.shape[-1]
     gs = 1
     while gs <= 8 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
@@ -155,7 +140,7 @@ def reduce_op(op_info):
 
     n_grps = (size + grp_size - 1) // grp_size
     ret_shape = calculate_ret_shape(x_shp, axis, keepdims, grp_size, n_grps)
-    ret = x.__class__(shape=ret_shape, dtype=x.dtype)
+    ret = CLArray(shape=ret_shape, dtype=x.dtype)
     # merge non-target axes
     p1 = [prod(x_shp[:axis])] if axis!=0 else []
     p2 = [prod(x_shp[axis+1:])] if axis!=len(x_shp)-1 else []
@@ -218,6 +203,7 @@ def register_elemwise_op(func):
             inputs = Array.broadcast(*inputs)
         op = func(*inputs)
         code = ELEMWISE_MAPPING[op]
+        kwargs = {**kwargs, "shape": inputs[0].shape, "dtype": inputs[0].dtype}
         op_info = SimpleNamespace(operator=op, code=code, operands=dict(zip("AB", inputs)), args=kwargs)
         if not LAZY or kwargs.get("eager", False):  # NOTE: for numpy() call
             return CLArray._invoke(op_info)
@@ -252,6 +238,11 @@ class CLArray(Array):
                 if data is not None:
                     data = np.asarray(data, dtype=self.dtype)
                     self.shape = data.shape
+
+                    if self.ndim == 0 or (self.ndim == 1 and self.shape == (1,)):
+                        self.constant_flag = True
+                        self.constant_value = float(data)
+
                 assert self.shape is not None, "Array shape is None!"
                 self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
 
@@ -259,12 +250,6 @@ class CLArray(Array):
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(self.ndim))
         self.c_contiguous, self.f_contiguous = self._calculate_contiguity()
         self.offset = 0  # offset relative to the beginning of the buffer
-
-        if OPT_CONSTANT_FOLDING:
-            if self.ndim == 0 or (self.ndim == 1 and self.shape == (1,)):
-                self.constant_flag = True
-                if not self.is_lazy and not isinstance(data, pyopencl.Buffer) and data is not None:
-                    self.constant_value = float(data)
 
     @property
     def size(self):
@@ -433,11 +418,12 @@ class CLArray(Array):
             for dep_node in node.op_info.operands.values():
                 if dep_node.is_lazy:
                     recursive_eager(dep_node)
-            eager = self._invoke(node.op_info)
-            node.update_from_eager(eager)
+            if node.is_lazy:
+                eager = self._invoke(node.op_info)
+                node.update_from_eager(eager)
 
         graphoptimizer = GraphOptimizer(root=self)
-        graphoptimizer.build()
+        graphoptimizer.build()  # TODO: remove build
         if GRAPH: graphoptimizer.visualize()
         if OPT_MERGE_ELEMWISE: graphoptimizer._merge_elemwise(node=self)
         if OPT_CONSTANT_FOLDING: graphoptimizer._constant_folding(node=self)

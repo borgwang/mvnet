@@ -44,7 +44,6 @@ def test_mul_ops():
         t3.backward([2, 2, 2])
         assert np.allclose(t1.grad.numpy(), [2*5, 2*(-2), 2*(-9)])
         assert np.allclose(t2.grad.numpy(), [2*1, 2*3, 2*5])
-
         t1 = Tensor([1, 3, 5], requires_grad=True).to(device)
         t2 = Tensor([1], requires_grad=True).to(device)
         t3 = t1 * t2

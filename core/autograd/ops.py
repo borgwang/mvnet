@@ -140,6 +140,18 @@ def relu(arr):
     return result, grad_fn
 
 @autograd_ops
+def expand(arr, shape):
+    # TODO: test it
+    expanded_axes = [i for i, (s1, s2) in enumerate(zip(arr.shape, shape)) if s1 == 1 and s2 > 1]
+    grad_fn = lambda g: g.squeeze(expanded_axes)
+    return arr.expand(shape), grad_fn
+
+@autograd_ops
+def squeeze(arr, axis):
+    # TODO: implement it
+    pass
+
+@autograd_ops
 def reshape(arr, shape):
     grad_fn = lambda g: g.reshape(arr.shape)
     return arr.reshape(shape), grad_fn
