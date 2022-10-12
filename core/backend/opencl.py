@@ -205,8 +205,8 @@ def register_elemwise_op(func):
         code = ELEMWISE_MAPPING[op]
         kwargs = {**kwargs, "shape": inputs[0].shape, "dtype": inputs[0].dtype}
         op_info = SimpleNamespace(operator=op, code=code, operands=dict(zip("AB", inputs)), args=kwargs)
-        if not LAZY or kwargs.get("eager", False):  # NOTE: for numpy() call
-            return CLArray._invoke(op_info)
+        if not LAZY or (kwargs.get("eager", False) and op == ElemwiseOps.NOOP):
+            return invoke(op_info)
         return CLArray(shape=inputs[0].shape, dtype=inputs[0].dtype, op_info=op_info, is_lazy=True)
     return wrapper
 
@@ -215,13 +215,24 @@ def register_reduce_op(func):
         op = func(x, axis=axis, keepdims=keepdims)
         x = x.contiguous() if not x.c_contiguous else x
         op_info = SimpleNamespace(operator=op, operands={"A": x}, args=dict(axis=axis, keepdims=keepdims))
-        if not LAZY:
-            return CLArray._invoke(op_info)
+        if not LAZY: return invoke(op_info)
         ret_shape = () if axis is None else [d for i, d in enumerate(x.shape) if i != axis]
         if keepdims: ret_shape.insert(axis, 1)
         return CLArray(shape=tuple(ret_shape), dtype=x.dtype, op_info=op_info, is_lazy=True)
     return wrapper
 
+def invoke(op_info):
+    optype = type(op_info.operator)
+    if optype is ElemwiseOps:
+        return elemwise_op(op_info)
+    elif optype is ReduceOps:
+        return reduce_op(op_info)
+    elif optype is ProcessingOps:
+        return matmul_op(op_info)
+    elif optype is ViewOps:
+        return list(op_info.operands.values())[0]  # TODO: better way?
+    else:
+        raise ValueError(f"Invoke invalid operator {op_info.operator}")
 
 class CLArray(Array):
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
@@ -239,8 +250,8 @@ class CLArray(Array):
                     data = np.asarray(data, dtype=self.dtype)
                     self.shape = data.shape
 
+                    # TODO: 能否完全挪到 graph optimizer 里判断 constant
                     if self.ndim == 0 or (self.ndim == 1 and self.shape == (1,)):
-                        self.constant_flag = True
                         self.constant_value = float(data)
 
                 assert self.shape is not None, "Array shape is None!"
@@ -250,6 +261,13 @@ class CLArray(Array):
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(self.ndim))
         self.c_contiguous, self.f_contiguous = self._calculate_contiguity()
         self.offset = 0  # offset relative to the beginning of the buffer
+
+    def to_constant(self, value):
+        self.is_lazy = False
+        self.op_info = SimpleNamespace(operator=None, operands={})
+        self.constant_value = value
+        data = np.asarray(value, dtype=self.dtype)
+        self.buffer = cl.alloc_buffer((), self.dtype, data)
 
     @property
     def size(self):
@@ -293,7 +311,7 @@ class CLArray(Array):
         operands = {"A": a, "B": b}
         args = {"out": out}
         op_info = SimpleNamespace(operator=ProcessingOps.MATMUL, operands=operands, args=args, ret_shape=ret_shape)
-        arr = self._invoke(op_info) if not LAZY else CLArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
+        arr = invoke(op_info) if not LAZY else CLArray(shape=ret_shape, dtype=a.dtype, op_info=op_info, is_lazy=True)
         for axis in squeezes:
             arr = arr.squeeze(axis)
         return arr
@@ -371,7 +389,8 @@ class CLArray(Array):
     def __setitem__(self, key, value):
         item = self[key]
         # unary_op("noop", value, ret=item)
-        assert False, "TODO: implement assign ops"
+        # TODO: implement assign ops
+        assert False
 
     # ##### Creation Ops #####
     @classmethod
@@ -395,21 +414,11 @@ class CLArray(Array):
         return cls(data=buffer, shape=shape, dtype=dtype)
 
     # ##### Lazy #####
-    @staticmethod
-    def _invoke(op_info):
-        optype = type(op_info.operator)
-        if optype is ElemwiseOps: return elemwise_op(op_info)
-        elif optype is ReduceOps: return reduce_op(op_info)
-        elif optype is ProcessingOps: return matmul_op(op_info)
-        elif optype is ViewOps: return list(op_info.operands.values())[0]  # TODO: better way?
-        else: raise ValueError(f"Invoke invalid operator {op_info.operator}")
-
     def update_from_eager(self, eager):
         assert self.is_lazy
         self.buffer = eager.buffer
         self.is_lazy = False
         self.op_info = SimpleNamespace(operator=None, operands={})
-        self.constant_flag = eager.constant_flag
         self.constant_value = eager.constant_value
         return self
 
@@ -419,16 +428,31 @@ class CLArray(Array):
                 if dep_node.is_lazy:
                     recursive_eager(dep_node)
             if node.is_lazy:
-                eager = self._invoke(node.op_info)
+                eager = invoke(node.op_info)
                 node.update_from_eager(eager)
 
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer.build()  # TODO: remove build
-        if GRAPH: graphoptimizer.visualize()
-        if OPT_MERGE_ELEMWISE: graphoptimizer._merge_elemwise(node=self)
-        if OPT_CONSTANT_FOLDING: graphoptimizer._constant_folding(node=self)
-        if GRAPH: graphoptimizer.visualize("opt")
-        recursive_eager(self)
+
+        # original graph
+        if GRAPH:
+            graph_name = "net"
+            graphoptimizer.visualize(graph_name)
+
+        # opt1: constant folding
+        if OPT_CONSTANT_FOLDING:
+            graphoptimizer._constant_folding(node=self)
+            if GRAPH:
+                graph_name += "_1"
+                graphoptimizer.visualize(graph_name)
+        # opt2: merge elemwise
+        if OPT_MERGE_ELEMWISE:
+            graphoptimizer._merge_elemwise(node=self)
+            if GRAPH:
+                graph_name += "_2"
+                graphoptimizer.visualize(graph_name)
+
+        recursive_eager(node=self)
         return self
 
     def _calculate_contiguity(self):

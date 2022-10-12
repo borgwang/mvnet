@@ -23,7 +23,6 @@ class Array:
         self.shape, self.dtype = shape, dtype
         self.op_info = op_info
         self.is_lazy = is_lazy
-        self.constant_flag = False
         self.constant_value = None
 
     def __repr__(self):

@@ -183,24 +183,11 @@ def test_graph_optimizer():
     loss_np = np.sum((pred_np - y_np)**2)
     check_tensor(loss, loss_np)
 
-
-def test_graph_optimizer_remove_contiguous():
-    if LAZY:
-        a_np = np.random.normal(0, 1, (3, 4, 2)).astype(np.float32)
-        b_np = np.random.normal(0, 1, (3, 4, 2)).astype(np.float32)
-        a = Tensor(a_np).to("gpu")
-        b = Tensor(b_np).to("gpu")
-        c = a + b
-        d = c.permute((1, 0, 2))
-        #d = c
-        e = d.reshape((1, 2, 3, 4))
-        e.array.eager()
-
-def test_graph_optimizer_constant_folding():
+def test_minimal():
     if not LAZY: return
     from utils.helper import kernelstat
     np.random.seed(0)
-    n_epoch = 50
+    n_epoch = 1
     lr = 0.0001
 
     BS = 2**6
@@ -244,9 +231,9 @@ def test_graph_optimizer_constant_folding():
             b -= lr * b.grad
             if LAZY and device == "gpu":
                 w.array = w.array.eager()
-                #print(kernelstat.info)
-                #print(kernelstat.total())
-                #return
+                print(kernelstat.info)
+                print(kernelstat.total())
+                return
                 b.array = b.array.eager()
         assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)
@@ -257,15 +244,26 @@ def test_graph_optimizer_constant_folding():
 
 
 def test_graph_optimizer_constant_folding_badcases():
-    if not LAZY:
-        return
+    if not LAZY: return
 
     a = Tensor(2).to("gpu")
     b = Tensor(2).to("gpu")
     c = a + b
     assert(c.numpy() == 4)
 
-    a_np = np.exp(np.tile(np.expand_dims(np.array(2), [0,1,2]), (3, 4, 5)))
+    a_np = np.log(np.tile(np.expand_dims(np.array(2), [0,1,2]), (3, 4, 5)))
     a = Tensor(2).to("gpu")
-    a = a.reshape((1, 1, 1)).expand((3, 4, 5)).exp()
+    a = a.reshape((1, 1, 1)).expand((3, 4, 5)).log()
     assert np.allclose(a.numpy(), a_np, rtol=1e-3)
+
+    a_np = np.log(np.tile(np.expand_dims(np.array(2), [0,1,2]), (3, 4, 5))) + 1
+    a = Tensor(2).to("gpu")
+    a = a.reshape((1, 1, 1)).expand((3, 4, 5)).log() + 1
+    assert np.allclose(a.numpy(), a_np, rtol=1e-3)
+
+    a_np = np.log(np.tile(np.expand_dims(np.array(2), [0,1,2]), (3, 4, 5))) ** 2
+    a = Tensor(2).to("gpu")
+    a = a.reshape((1, 1, 1)).expand((3, 4, 5)).log()
+    a = a ** 2
+    assert np.allclose(a.numpy(), a_np, rtol=1e-3)
+
