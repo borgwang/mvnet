@@ -187,7 +187,7 @@ def test_minimal():
     if not LAZY: return
     from utils.helper import kernelstat
     np.random.seed(0)
-    n_epoch = 1
+    n_epoch = 50
     lr = 0.0001
 
     BS = 2**6
@@ -225,15 +225,16 @@ def test_minimal():
             loss = (err ** 2).sum()
             #print("!!!!!", loss.array.numpy())
             #print(kernelstat.info)
+            #print(kernelstat.total())
             #return
             loss.backward()
             w -= lr * w.grad
             b -= lr * b.grad
             if LAZY and device == "gpu":
                 w.array = w.array.eager()
-                print(kernelstat.info)
-                print(kernelstat.total())
-                return
+                #print(kernelstat.info)
+                #print(kernelstat.total())
+                #return
                 b.array = b.array.eager()
         assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)

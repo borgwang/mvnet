@@ -120,7 +120,7 @@ def matmul_op(op_info):
     return ret
 
 def reduce_op(op_info):
-    x = list(op_info.operands.values())[0]
+    x = next(iter(op_info.operands.values()))
     x_shp = x.shape
     axis, keepdims = op_info.args["axis"], op_info.args["keepdims"]
     if axis is None: axis, x_shp = 0, (prod(x.shape),)
@@ -181,7 +181,7 @@ def reduce_op(op_info):
     return ret
 
 def view_op(op_info):
-    x = list(op_info.operands.values())[0]
+    x = next(iter(op_info.operands.values()))
     inst = copy.copy(x)
     if op_info.operator == ViewOps.EXPAND:
         shape = op_info.args["shape"]
@@ -230,7 +230,7 @@ def invoke(op_info):
     elif optype is ProcessingOps:
         return matmul_op(op_info)
     elif optype is ViewOps:
-        return list(op_info.operands.values())[0]  # TODO: better way?
+        return next(iter(op_info.operands.values()))
     else:
         raise ValueError(f"Invoke invalid operator {op_info.operator}")
 
