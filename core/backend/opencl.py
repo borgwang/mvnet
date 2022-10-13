@@ -7,7 +7,7 @@ import numpy as np
 import pyopencl
 import pyopencl.clrandom
 
-from env import DEBUG, GRAPH, LAZY, OPT_MERGE_ELEMWISE, OPT_CONSTANT_FOLDING
+from env import *
 from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
 from core.dtype import int32, float32
 from core.jit.graph import GraphOptimizer
@@ -58,7 +58,8 @@ class CLContext:
 cl = CLContext()
 
 def elemwise_op(op_info):
-    inp = op_info.operands
+    # NOTE: exclude const operands
+    inp = {k: v for k, v in op_info.operands.items() if k not in op_info.args.get("const", {})}
     assert len(set([tuple(x.shape) for x in inp.values()])) <= 1, \
         f"Invalid input shape for elemwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
 
@@ -68,8 +69,11 @@ def elemwise_op(op_info):
     args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
     args += "".join(f"int {name}_ofst, " for name in inp)
     args += "".join(f"__global const float *inp_{name}, " for name in inp)
+    args += "".join(f"const float {name}, " for name in op_info.args.get("const", {}))
+
     update = "".join(f"idx=ptr/res_s{i}; ptr%=res_s{i};" + "".join(f"{name}_i+=idx*{name}_s{i};" for name in inp) for i in range(ret.ndim))
     assign = ";".join(f"float {name}=inp_{name}[{name}_i+{name}_ofst]" for name in inp)
+
     op = cl.build("ElemwiseOp", f"""__kernel void ElemwiseOp({args} __global float *ret) {{
       {";".join(f"int {name}_i=0" for name in inp)};
       int idx=0, gl_id=get_global_id(0); int ptr=gl_id;
@@ -79,6 +83,7 @@ def elemwise_op(op_info):
     args = [int32(s) for ss in zip(*[x.strides for x in (list(inp.values())+[ret])]) for s in ss]
     args += [int32(x.offset) for x in inp.values()]
     args += [x.buffer for x in inp.values()]
+    args += [float32(x) for x in op_info.args.get("const", {}).values()]
     e = op((prod(shape),), None, *args, ret.buffer)
     kernelstat.log(op_info.operator)
     if GRAPH: e.wait()
@@ -178,7 +183,7 @@ def reduce_op(op_info):
     kernelstat.log(op_info.operator)
     if GRAPH: e.wait()
     if n_grps > 1:
-        op_info = SimpleNamespace(operator=op_info.operator, operands={"A": ret}, args=dict(axis=axis, keepdims=keepdims))
+        op_info = SimpleNamespace(operator=op_info.operator, operands={"A": ret}, args=op_info.args)
         ret = reduce_op(op_info)
     return ret
 
@@ -239,7 +244,7 @@ def invoke(op_info):
 class CLArray(Array):
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
         super().__init__(shape, dtype, op_info, is_lazy)
-        self.op_info = SimpleNamespace(operator=None, operands={}) if op_info is None else op_info
+        self.op_info = SimpleNamespace(operator=None, operands={}, args={}) if op_info is None else op_info
         self.outdegree = 0
         self.is_visited = False
 
@@ -266,7 +271,7 @@ class CLArray(Array):
 
     def to_constant(self, value):
         self.is_lazy = False
-        self.op_info = SimpleNamespace(operator=None, operands={})
+        self.op_info = SimpleNamespace(operator=None, operands={}, args={})
         self.constant_value = value
         data = np.asarray(value, dtype=self.dtype)
         self.buffer = cl.alloc_buffer((), self.dtype, data)
@@ -448,9 +453,9 @@ class CLArray(Array):
             if GRAPH:
                 graph_name += "_1"
                 graphoptimizer.visualize(graph_name)
-        # opt2: merge elemwise
-        if OPT_MERGE_ELEMWISE:
-            graphoptimizer._merge_elemwise(node=self)
+        # opt2: elemwise fusion
+        if OPT_ELEMWISE_FUSION:
+            graphoptimizer._elemwise_fusion(node=self)
             if GRAPH:
                 graph_name += "_2"
                 graphoptimizer.visualize(graph_name)

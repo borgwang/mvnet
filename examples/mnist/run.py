@@ -62,13 +62,12 @@ def main(args):
     test_y = Tensor(test_y)
 
     net = SequentialNet(
-            #Dense(256), ReLU(),
-            #Dense(128), ReLU(),
-            #Dense(64), ReLU(),
-            #Dense(32), ReLU(),
+            Dense(256), ReLU(),
+            Dense(128), ReLU(),
+            Dense(64), ReLU(),
+            Dense(32), ReLU(),
             Dense(10)).to(args.device)
     optim = Adam(net.get_parameters(), lr=args.lr)
-    #optim = SGD(net.get_parameters(), lr=args.lr)
     loss_fn = SoftmaxCrossEntropyLoss()
 
     iterator = BatchIterator(batch_size=args.batch_size)
@@ -87,6 +86,11 @@ def main(args):
                 sys.exit()
             loss.backward()
             optim.step()
+            if args.profile_backward:
+                print(kernelstat.info)
+                print("total kernel call: ", kernelstat.total())
+                sys.exit()
+
         print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))
         from core.backend.opencl import cl
         print(f"opencl builld count: {cl.build_cnt}")
@@ -108,6 +112,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", default=0, type=int)
 
     parser.add_argument("--profile_forward", default=0, type=int)
+    parser.add_argument("--profile_backward", default=0, type=int)
     parser.add_argument("--eval", default=0, type=int)
     default_device = "gpu" if BACKEND in ("opencl", "cuda") else "cpu"
     parser.add_argument("--device", default=default_device, type=str)

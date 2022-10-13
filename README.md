@@ -40,6 +40,11 @@ GRAPH=0 LAZY=1 BACKEND=opencl python3 examples/mnist/run.py --batch_size 4096 --
 GRAPH=0 LAZY=1 BACKEND=opencl python3 examples/mnist/run.py --batch_size 4096 --eval 1
 ```
 
+### Test
+```
+DEBUG=0 GRAPH=0 LAZY=1 BACKEND=opencl pytest -s
+```
+
 ### License
 
 MIT

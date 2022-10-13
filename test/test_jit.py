@@ -2,7 +2,7 @@ import runtime_path  # isort:skip
 
 import numpy as np
 
-from env import LAZY, GRAPH, OPT_MERGE_ELEMWISE, OPT_CONSTANT_FOLDING
+from env import *
 from core.tensor import Tensor
 from utils.helper import kernelstat
 from core.backend.base import ElemwiseOps, ReduceOps, ProcessingOps, ViewOps, CreationOps
@@ -113,7 +113,7 @@ def _test_lazy_forward():
     print(kernelstat.info)
     if LAZY:
         assert kernelstat.get(ProcessingOps)["MATMUL"] == 0
-        if not OPT_MERGE_ELEMWISE:
+        if not OPT_ELEMWISE_FUSION:
             assert sum(kernelstat.get(ElemwiseOps).values()) == 4 + 3
         else:
             assert sum(kernelstat.get(ElemwiseOps).values()) == 1 + 3
@@ -232,9 +232,9 @@ def test_minimal():
             b -= lr * b.grad
             if LAZY and device == "gpu":
                 w.array = w.array.eager()
-                #print(kernelstat.info)
-                #print(kernelstat.total())
-                #return
+                print(kernelstat.info)
+                print(kernelstat.total())
+                return
                 b.array = b.array.eager()
         assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)
