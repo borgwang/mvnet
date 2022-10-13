@@ -33,9 +33,11 @@ class CLContext:
         self.ctx = pyopencl.Context(devices)
         self.queue = pyopencl.CommandQueue(self.ctx)
         self.rng = pyopencl.clrandom.PhiloxGenerator(self.ctx, seed=0)
+        self.build_cnt = 0
 
     @lru_cache(maxsize=None)
     def build(self, name, program):
+        self.build_cnt += 1
         if DEBUG: print(f"[DEBUG] program {name}: \n {program}")
         kernel = pyopencl.Program(self.ctx, program).build().__getattr__(name)
         return lambda *args: kernel(self.queue, *args)
@@ -433,6 +435,7 @@ class CLArray(Array):
 
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer.build()  # TODO: remove build
+        graphoptimizer._rename_operands(node=self)
 
         # original graph
         if GRAPH:
@@ -473,3 +476,10 @@ class CLArray(Array):
                     f_contiguous = False
                 nitems *= self.shape[i]
         return c_contiguous, f_contiguous
+
+
+"""
+_aaa+(
+(-0.00f* ((_aah+(0.10f*(_ada-_adb)))/0.27f) )  /  pow( ((_adn + (0.00f*((pow(_adr,2.00f))-_adw)))/0.00f), 0.50f)
+)
+"""

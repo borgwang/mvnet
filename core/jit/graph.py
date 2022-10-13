@@ -7,7 +7,7 @@ import numpy as np
 from types import SimpleNamespace
 
 from core.backend.base import ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
-from env import DEBUG, OPT_CONSTANT_FOLDING
+from env import DEBUG
 from utils.helper import varnamegetter
 
 class GraphOptimizer:
@@ -42,41 +42,45 @@ class GraphOptimizer:
     def _merge_elemwise(self, node):
         """element-wise ops (unary or binary) can be merged, thus reduce kernel calls. Consider the following computational graph.
         `a = b + c; d = a * e; ret = exp(d)`
-        Three element-wise kernel ops can be merged into one single kernel call, i.e. ret = exp((b + c) * e).
-        """
-        visit_flag1, visit_flag2 = defaultdict(bool), defaultdict(bool)
-
-        def rename_operands(node):
-            newoperands = {}
-            for name, dep_node in node.op_info.operands.items():
-                if not visit_flag1[id(dep_node)]:
-                    rename_operands(dep_node)
-                new_name = varnamegetter.get()
-                newoperands[new_name] = dep_node
-                if type(node.op_info.operator) is ElemwiseOps:
-                    node.op_info.code = node.op_info.code.replace(name, new_name)
-            node.op_info.operands = newoperands
-            visit_flag1[id(node)] = True
+        Three element-wise kernel ops can be merged into one single kernel call, i.e. ret = exp((b + c) * e).  """
+        visit_flag = defaultdict(bool)
 
         def merge_elemwise(node):
             newoperands = copy.copy(node.op_info.operands)
             operator = node.op_info.operator
             for name, dep_node in node.op_info.operands.items():
                 if dep_node.is_lazy:
-                    if not visit_flag2[id(dep_node)]:
+                    if not visit_flag[id(dep_node)]:
                         merge_elemwise(dep_node)
                 if type(operator) is ElemwiseOps and \
                         type(dep_node.op_info.operator) is ElemwiseOps and dep_node.outdegree == 1:
                     newoperands.pop(name)
                     newoperands.update(dep_node.op_info.operands)
                     experssion = f"({dep_node.op_info.code})"
-                    node.op_info.code = node.op_info.code.replace(name, experssion)
-                    if DEBUG: print(f"DEBUG replace expression {id(node)} {name} -> {experssion}")
+                    newcode = node.op_info.code.replace(name, experssion)
+                    if DEBUG: print(f"DEBUG replace expression {id(node)} {node.op_info.code} -> {newcode}")
+                    node.op_info.code = newcode
             node.op_info.operands = newoperands
-            visit_flag2[id(node)] = True
+            visit_flag[id(node)] = True
 
-        rename_operands(node)
         merge_elemwise(node)
+
+    def _rename_operands(self, node):
+        visit_flag = defaultdict(bool)
+
+        def rename_operands(node):
+            newoperands = {}
+            for name, dep_node in node.op_info.operands.items():
+                if not visit_flag[id(dep_node)]:
+                    rename_operands(dep_node)
+                new_name = varnamegetter.get()
+                newoperands[new_name] = dep_node
+                if type(node.op_info.operator) is ElemwiseOps:
+                    node.op_info.code = node.op_info.code.replace(name, new_name)
+            node.op_info.operands = newoperands
+            visit_flag[id(node)] = True
+        rename_operands(node)
+
 
     def _constant_folding(self, node):
         if node.constant_value is not None:
@@ -105,7 +109,7 @@ class GraphOptimizer:
                 # 1. replace op code
                 for name, dep_node in node.op_info.operands.items():
                     if not dep_constant_flags[name]: continue
-                    code = code.replace(name, f"{dep_node.constant_value}f")
+                    code = code.replace(name, f"{dep_node.constant_value:.15f}f")
                 if DEBUG: print(f"[DEBUG] update code {node.op_info.code} -> {code}")
                 node.op_info.code = code
                 # 2. pop operands
@@ -130,9 +134,8 @@ class GraphOptimizer:
             if nid in G.nodes: return G
             G.add_node(nid)
             label = f"{node.shape}\n{nid}\nC:{int(node.c_contiguous)} F:{int(node.f_contiguous)}"
-            if OPT_CONSTANT_FOLDING:
-                if node.constant_value is not None:
-                    label += f"\nCONSTANT={node.constant_value}"
+            if node.constant_value is not None:
+                label += f"\nCONSTANT={node.constant_value}"
             if node.op_info.operator is not None: label += f"\n{node.op_info.operator.name}"
             G.nodes[nid]["label"] = label
             G.nodes[nid]["shape"] = "box"

@@ -18,7 +18,7 @@ class VarNameGetter:
     def __init__(self):
         letters = tuple(string.ascii_lowercase)
         candidates = itertools.product(*([letters]*3))  # 26^4
-        self.candidates = tuple("".join(s) for s in candidates)
+        self.candidates = tuple("_" + "".join(s) for s in candidates)
         self.reset()
 
     def get(self):

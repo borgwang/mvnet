@@ -20,6 +20,7 @@ from utils.evaluator import AccEvaluator
 from utils.helper import kernelstat
 from env import DEBUG, GRAPH, LAZY, BACKEND
 
+
 def get_one_hot(targets, nb_classes):
     return np.eye(nb_classes)[np.array(targets).reshape(-1)]
 
@@ -61,10 +62,10 @@ def main(args):
     test_y = Tensor(test_y)
 
     net = SequentialNet(
-            Dense(256), ReLU(),
-            Dense(128), ReLU(),
-            Dense(64), ReLU(),
-            Dense(32), ReLU(),
+            #Dense(256), ReLU(),
+            #Dense(128), ReLU(),
+            #Dense(64), ReLU(),
+            #Dense(32), ReLU(),
             Dense(10)).to(args.device)
     optim = Adam(net.get_parameters(), lr=args.lr)
     #optim = SGD(net.get_parameters(), lr=args.lr)
@@ -87,6 +88,8 @@ def main(args):
             loss.backward()
             optim.step()
         print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))
+        from core.backend.opencl import cl
+        print(f"opencl builld count: {cl.build_cnt}")
         if args.eval:
             test_pred = net.forward(test_x).numpy()
             test_pred_idx = np.argmax(test_pred, axis=1)
