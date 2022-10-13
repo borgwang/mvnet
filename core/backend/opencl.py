@@ -58,8 +58,8 @@ class CLContext:
 cl = CLContext()
 
 def elemwise_op(op_info):
-    # NOTE: exclude const operands
-    inp = {k: v for k, v in op_info.operands.items() if k not in op_info.args.get("const", {})}
+    inp = {k: v for k, v in op_info.operands.items() if v.constant_value is None}
+    const_inp = {k: v for k, v in op_info.operands.items() if v.constant_value is not None}
     assert len(set([tuple(x.shape) for x in inp.values()])) <= 1, \
         f"Invalid input shape for elemwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
 
@@ -69,8 +69,7 @@ def elemwise_op(op_info):
     args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
     args += "".join(f"int {name}_ofst, " for name in inp)
     args += "".join(f"__global const float *inp_{name}, " for name in inp)
-    args += "".join(f"const float {name}, " for name in op_info.args.get("const", {}))
-
+    args += "".join(f"const float {name}, " for name in const_inp)
     update = "".join(f"idx=ptr/res_s{i}; ptr%=res_s{i};" + "".join(f"{name}_i+=idx*{name}_s{i};" for name in inp) for i in range(ret.ndim))
     assign = ";".join(f"float {name}=inp_{name}[{name}_i+{name}_ofst]" for name in inp)
 
@@ -83,7 +82,7 @@ def elemwise_op(op_info):
     args = [int32(s) for ss in zip(*[x.strides for x in (list(inp.values())+[ret])]) for s in ss]
     args += [int32(x.offset) for x in inp.values()]
     args += [x.buffer for x in inp.values()]
-    args += [float32(x) for x in op_info.args.get("const", {}).values()]
+    args += [float32(x.constant_value) for x in const_inp.values()]
     e = op((prod(shape),), None, *args, ret.buffer)
     kernelstat.log(op_info.operator)
     if GRAPH: e.wait()

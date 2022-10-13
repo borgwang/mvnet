@@ -41,29 +41,18 @@ class GraphOptimizer:
 
     def _elemwise_fusion(self, node):
         visit_flag = defaultdict(bool)
-
         def elemwise_fusion(node):
-            newoperands = copy.copy(node.op_info.operands)
-            operator = node.op_info.operator
-            for name, dep_node in node.op_info.operands.items():
+            for name in list(node.op_info.operands):
+                dep_node = node.op_info.operands[name]
                 if dep_node.is_lazy:
                     if not visit_flag[id(dep_node)]:
                         elemwise_fusion(dep_node)
-                if type(operator) is ElemwiseOps and \
+                if type(node.op_info.operator) is ElemwiseOps and \
                         type(dep_node.op_info.operator) is ElemwiseOps and dep_node.outdegree == 1:
-                    # TODO: clean this up
-                    newoperands.pop(name)
-                    newoperands.update(dep_node.op_info.operands)
-                    if "const" not in node.op_info.args:
-                        node.op_info.args["const"] = {}
-                    node.op_info.args["const"].update(dep_node.op_info.args.get("const", {}))
-                    experssion = f"({dep_node.op_info.code})"
-                    newcode = node.op_info.code.replace(name, experssion)
-                    if DEBUG: print(f"DEBUG replace expression {id(node)} {node.op_info.code} -> {newcode}")
-                    node.op_info.code = newcode
-            node.op_info.operands = newoperands
+                    node.op_info.operands.pop(name)
+                    node.op_info.operands.update(dep_node.op_info.operands)
+                    node.op_info.code = node.op_info.code.replace(name, f"({dep_node.op_info.code})")
             visit_flag[id(node)] = True
-
         elemwise_fusion(node)
 
     def _rename_operands(self, node):
@@ -83,7 +72,6 @@ class GraphOptimizer:
 
     def _constant_folding(self, node):
         if node.constant_value is not None:
-            if DEBUG: print(f"[DEBUG] {id(node)} return True")
             return True
 
         dep_const_flags = {}
@@ -96,57 +84,38 @@ class GraphOptimizer:
         const_flag = False
         if any(dep_const_flags.values()):
             if isinstance(node.op_info.operator, ViewOps):
-                if DEBUG: print(f"[DEBUG] view node update id {id(node)}")
-                dep_node = list(node.op_info.operands.values())[0]
+                dep_node = next(iter(node.op_info.operands.values()))
                 node.to_constant(dep_node.constant_value)
                 const_flag = True
 
             if isinstance(node.op_info.operator, ElemwiseOps):
-                if DEBUG: print(f"[DEBUG] {id(node)} elemwise node update, original operands: {node.op_info.operands}")
-                # TODO: refactor
-                # 1. replace op code
-                code = node.op_info.code
-                op_constant = {}
-                for name, dep_node in node.op_info.operands.items():
-                    if not dep_const_flags[name]: continue
-                    code = code.replace(name, f"{dep_node.constant_value:.15f}f")
-                    op_constant[name] = dep_node.constant_value
-                node.op_info.args["const"] = op_constant
-
-                # 2. pop operands
-                for name in dep_const_flags:
-                    if not dep_const_flags[name]: continue
-                    del node.op_info.operands[name]
-
-                # NOTE: convert non-unary ops only
-                if all(dep_const_flags.values()) and len(dep_const_flags) > 1:
-                    if DEBUG: print(f"[DEBUG] elemwise node fully update id {id(node)}")
-                    constant_value = eval(code.replace("f", ""))
-                    node.to_constant(constant_value)
+                if all(dep_const_flags.values()) and len(dep_const_flags) > 1:  # NOTE: skip unary ops
+                    expr = node.op_info.code
+                    for name, dep_node in node.op_info.operands.items():
+                        expr = expr.replace(name, f"{dep_node.constant_value:.15f}f")
+                    node.to_constant(eval(expr.replace("f", "")))
                     const_flag = True
-        if DEBUG: print(f"[DEBUG] {id(node)} return {const_flag} dep_const_flags: {dep_const_flags} final operands: {node.op_info.operands}")
         return const_flag
 
     def visualize(self, graph_name):
         colors = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}
         def build_graph(node, G):
             if node is None: return G
-            nid = id(node)
-            if nid in G.nodes: return G
-            G.add_node(nid)
+            if id(node) in G.nodes: return G
+            G.add_node(id(node))
             label = (f"{node.shape}\n"
-                     f"{nid}\n"
+                     f"{id(node)}\n"
                      f"C:{int(node.c_contiguous)} F:{int(node.f_contiguous)}")
             if node.constant_value is not None:
                 label += f"\nCONSTANT={node.constant_value}"
             if node.op_info.operator is not None: label += f"\n{node.op_info.operator.name}"
-            G.nodes[nid]["label"] = label
-            G.nodes[nid]["shape"] = "box"
-            G.nodes[nid]["style"] = "filled, dashed" if node.is_lazy else "filled"
-            G.nodes[nid]["fillcolor"] = colors.get(type(node.op_info.operator), "#ffffff")
+            G.nodes[id(node)]["label"] = label
+            G.nodes[id(node)]["shape"] = "box"
+            G.nodes[id(node)]["style"] = "filled, dashed" if node.is_lazy else "filled"
+            G.nodes[id(node)]["fillcolor"] = colors.get(type(node.op_info.operator), "#ffffff")
             for name, subnode in node.op_info.operands.items():
                 G = build_graph(subnode, G)
-                edge = (id(subnode), nid)
+                edge = (id(subnode), id(node))
                 if edge not in G.edges:
                     G.add_edge(*edge, cnt=1, label=name)
             return G

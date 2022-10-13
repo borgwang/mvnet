@@ -232,16 +232,16 @@ def test_minimal():
             b -= lr * b.grad
             if LAZY and device == "gpu":
                 w.array = w.array.eager()
-                print(kernelstat.info)
-                print(kernelstat.total())
-                return
+                #print(kernelstat.info)
+                #print(kernelstat.total())
+                #return
                 b.array = b.array.eager()
         assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)
         assert np.allclose(b.numpy(), b_final, rtol=1e-3)
-    print("!!!!!!!!", time.monotonic() - st)
-    print(kernelstat.info)
-    print(kernelstat.total())
+    #print("!!!!!!!!", time.monotonic() - st)
+    #print(kernelstat.info)
+    #print(kernelstat.total())
 
 
 def test_graph_optimizer_constant_folding_badcases():
