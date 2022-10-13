@@ -436,24 +436,24 @@ class CLArray(Array):
                 node.update_from_eager(eager)
 
         graphoptimizer = GraphOptimizer(root=self)
-        graphoptimizer._rename_operands(node=self)
+        graphoptimizer._rename_operands(self)
 
         # original graph
         if GRAPH:
             graph_name = "net"
-            graphoptimizer.visualize(graph_name)
+            graphoptimizer.visualize(self, graph_name)
         # opt1: constant folding
         if OPT_CONSTANT_FOLDING:
-            graphoptimizer._constant_folding(node=self)
+            graphoptimizer._constant_folding(self)
             if GRAPH:
                 graph_name += "_1"
-                graphoptimizer.visualize(graph_name)
+                graphoptimizer.visualize(self, graph_name)
         # opt2: elemwise fusion
         if OPT_ELEMWISE_FUSION:
-            graphoptimizer._elemwise_fusion(node=self)
+            graphoptimizer._elemwise_fusion(self)
             if GRAPH:
                 graph_name += "_2"
-                graphoptimizer.visualize(graph_name)
+                graphoptimizer.visualize(self, graph_name)
 
         recursive_eager(node=self)
         return self

@@ -16,82 +16,81 @@ class GraphOptimizer:
         self.root = root
         varnamegetter.reset()
 
-    def _elemwise_fusion(self, node):
-
+    def _elemwise_fusion(self, root):
         def elemwise_fusion(node):
             for name in list(node.op_info.operands):
                 dep_node = node.op_info.operands[name]
                 if not dep_node.is_lazy:
                     continue
-                if not visit_flag[id(dep_node)]:
+                if not visited[id(dep_node)]:
                     elemwise_fusion(dep_node)
-                if type(node.op_info.operator) is ElemwiseOps and type(dep_node.op_info.operator) is ElemwiseOps and outdegree[id(dep_node)] == 1:
+                if type(node.op_info.operator) is ElemwiseOps and \
+                        type(dep_node.op_info.operator) is ElemwiseOps and outdegree[id(dep_node)] == 1:
                     node.op_info.operands.pop(name)
                     node.op_info.operands.update(dep_node.op_info.operands)
                     node.op_info.code = node.op_info.code.replace(name, f"({dep_node.op_info.code})")
-            visit_flag[id(node)] = True
+            visited[id(node)] = True
 
         def update_outdegree(node):
-            if visit_flag[id(node)]: return
+            if visited[id(node)]: return
             for name, dep_node in node.op_info.operands.items():
                 outdegree[id(dep_node)] += 1
                 update_outdegree(dep_node)
-            visit_flag[id(node)] = True
+            visited[id(node)] = True
 
         outdegree = defaultdict(int)
-        visit_flag = defaultdict(bool)
-        update_outdegree(node)
-        visit_flag = defaultdict(bool)
-        elemwise_fusion(node)
+        visited = defaultdict(bool)
+        update_outdegree(root)
+        visited = defaultdict(bool)
+        elemwise_fusion(root)
 
-    def _rename_operands(self, node):
+    def _rename_operands(self, root):
         def rename_operands(node):
             newoperands = {}
             for name, dep_node in node.op_info.operands.items():
-                if not visit_flag[id(dep_node)]:
+                if not visited[id(dep_node)]:
                     rename_operands(dep_node)
                 new_name = name_dict[id(dep_node)]
                 newoperands[new_name] = dep_node
                 if type(node.op_info.operator) is ElemwiseOps:
                     node.op_info.code = node.op_info.code.replace(name, new_name)
             node.op_info.operands = newoperands
-            visit_flag[id(node)] = True
+            visited[id(node)] = True
 
-        visit_flag = defaultdict(bool)
+        visited = defaultdict(bool)
         name_dict = defaultdict(varnamegetter.get)
-        rename_operands(node)
+        rename_operands(root)
 
-    def _constant_folding(self, node):
+    def _constant_folding(self, root):
         def constant_folding(node):
             if node.constant_value is not None:
                 return True
-            dep_const_flags = {}
+            dep_is_const = []
             for name, dep_node in node.op_info.operands.items():
                 if id(dep_node) not in cache:
                     flag = constant_folding(dep_node)
                     cache[id(dep_node)] = flag
-                dep_const_flags[name] = cache[id(dep_node)]
+                dep_is_const.append(cache[id(dep_node)])
 
-            const_flag = False
-            if any(dep_const_flags.values()):
+            is_const = False
+            if any(dep_is_const):
                 if isinstance(node.op_info.operator, ViewOps):
                     dep_node = next(iter(node.op_info.operands.values()))
                     node.to_constant(dep_node.constant_value)
-                    const_flag = True
-
+                    is_const = True
                 if isinstance(node.op_info.operator, ElemwiseOps):
-                    if all(dep_const_flags.values()) and len(dep_const_flags) > 1:  # NOTE: skip unary ops
+                    if all(dep_is_const) and len(dep_is_const) > 1:  # NOTE: skip unary ops
                         expr = node.op_info.code
                         for name, dep_node in node.op_info.operands.items():
                             expr = expr.replace(name, f"{dep_node.constant_value:.15f}f")
                         node.to_constant(eval(expr.replace("f", "")))
-                        const_flag = True
-            return const_flag
+                        is_const = True
+            return is_const
 
         cache = {}
-        constant_folding(node)
+        constant_folding(root)
 
-    def visualize(self, graph_name):
+    def visualize(self, root, graph_name):
         colors = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}
         def build_graph(node, G):
             if node is None: return G
@@ -114,7 +113,7 @@ class GraphOptimizer:
                     G.add_edge(*edge, cnt=1, label=name)
             return G
         G = nx.DiGraph()
-        G = build_graph(self.root, G)
+        G = build_graph(root, G)
         nx.drawing.nx_pydot.write_dot(G, f"/tmp/{graph_name}.dot")
         os.system(f"dot -Tsvg /tmp/{graph_name}.dot -o /tmp/{graph_name}.svg")
         print(f"[GRAPH] save to /tmp/{graph_name}.svg")
