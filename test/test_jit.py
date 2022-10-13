@@ -232,9 +232,9 @@ def test_minimal():
             b -= lr * b.grad
             if LAZY and device == "gpu":
                 w.array = w.array.eager()
-                #print(kernelstat.info)
-                #print(kernelstat.total())
-                #return
+                print(kernelstat.info)
+                print(kernelstat.total())
+                return
                 b.array = b.array.eager()
         assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
         assert np.allclose(w.numpy(), w_final, rtol=1e-3)
@@ -268,3 +268,34 @@ def test_graph_optimizer_constant_folding_badcases():
     a = a ** 2
     assert np.allclose(a.numpy(), a_np, rtol=1e-3)
 
+def test_graph_optimizer_elemwise_fusion_badcases():
+    if not LAZY: return
+
+    # should fuse
+    a_np = np.random.normal(0, 1, (10, 10))
+    tmp = np.exp(a_np)
+    b_np = np.exp(tmp) + np.log(tmp)
+    a = Tensor(a_np).to("gpu")
+    a = a.exp()
+    b = a.exp() + a.log()
+    assert np.allclose(b.numpy(), b_np, rtol=1e-3)
+
+    # should NOT fuse
+    a_np = np.random.normal(0, 1, (10, 10))
+    tmp = np.exp(a_np)
+    b_np = np.exp(tmp) + np.log(tmp).sum()
+    a = Tensor(a_np).to("gpu")
+    a = a.exp()
+    b = a.exp() + a.log().sum()
+    assert np.allclose(b.numpy(), b_np, rtol=1e-3)
+
+    # should NOT fuse
+    a_np = np.random.normal(0, 1, (10, 10))
+    b_np = np.random.normal(0, 1, (10, 10))
+    c_np = np.exp(a_np + b_np)
+    d_np = c_np / c_np.sum()
+    a = Tensor(a_np).to("gpu")
+    b = Tensor(b_np).to("gpu")
+    c = (a + b).exp()
+    d = c / c.sum()
+    assert np.allclose(d.numpy(), d_np, rtol=1e-3)

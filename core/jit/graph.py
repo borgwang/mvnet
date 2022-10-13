@@ -14,88 +14,82 @@ class GraphOptimizer:
     def __init__(self, root):
         assert root.is_lazy
         self.root = root
-        self._constant_folding_visit_flag = {}
-
         varnamegetter.reset()
 
-    def build(self, node=None):
-        def _reset_visit(node):
-            for name, dep_node in node.op_info.operands.items():
-                dep_node.is_visited = False
-                _reset_visit(dep_node)
-        def _reset_outdegree(node):
-            for name, dep_node in node.op_info.operands.items():
-                dep_node.outdegree = 0
-                _reset_outdegree(dep_node)
-        def _build(node):
-            if node.is_visited: return
-            for name, dep_node in node.op_info.operands.items():
-                dep_node.outdegree += 1
-                _build(dep_node)
-                dep_node.is_visited = True
-
-        if node is None: node = self.root
-        _reset_outdegree(node)
-        _build(node)
-        _reset_visit(node)
-
     def _elemwise_fusion(self, node):
-        visit_flag = defaultdict(bool)
+
         def elemwise_fusion(node):
             for name in list(node.op_info.operands):
                 dep_node = node.op_info.operands[name]
-                if dep_node.is_lazy:
-                    if not visit_flag[id(dep_node)]:
-                        elemwise_fusion(dep_node)
-                if type(node.op_info.operator) is ElemwiseOps and \
-                        type(dep_node.op_info.operator) is ElemwiseOps and dep_node.outdegree == 1:
+                if not dep_node.is_lazy:
+                    continue
+                if not visit_flag[id(dep_node)]:
+                    elemwise_fusion(dep_node)
+                if type(node.op_info.operator) is ElemwiseOps and type(dep_node.op_info.operator) is ElemwiseOps and outdegree[id(dep_node)] == 1:
                     node.op_info.operands.pop(name)
                     node.op_info.operands.update(dep_node.op_info.operands)
                     node.op_info.code = node.op_info.code.replace(name, f"({dep_node.op_info.code})")
             visit_flag[id(node)] = True
+
+        def update_outdegree(node):
+            if visit_flag[id(node)]: return
+            for name, dep_node in node.op_info.operands.items():
+                outdegree[id(dep_node)] += 1
+                update_outdegree(dep_node)
+            visit_flag[id(node)] = True
+
+        outdegree = defaultdict(int)
+        visit_flag = defaultdict(bool)
+        update_outdegree(node)
+        visit_flag = defaultdict(bool)
         elemwise_fusion(node)
 
     def _rename_operands(self, node):
-        visit_flag = defaultdict(bool)
         def rename_operands(node):
             newoperands = {}
             for name, dep_node in node.op_info.operands.items():
                 if not visit_flag[id(dep_node)]:
                     rename_operands(dep_node)
-                new_name = varnamegetter.get()
+                new_name = name_dict[id(dep_node)]
                 newoperands[new_name] = dep_node
                 if type(node.op_info.operator) is ElemwiseOps:
                     node.op_info.code = node.op_info.code.replace(name, new_name)
             node.op_info.operands = newoperands
             visit_flag[id(node)] = True
+
+        visit_flag = defaultdict(bool)
+        name_dict = defaultdict(varnamegetter.get)
         rename_operands(node)
 
     def _constant_folding(self, node):
-        if node.constant_value is not None:
-            return True
+        def constant_folding(node):
+            if node.constant_value is not None:
+                return True
+            dep_const_flags = {}
+            for name, dep_node in node.op_info.operands.items():
+                if id(dep_node) not in cache:
+                    flag = constant_folding(dep_node)
+                    cache[id(dep_node)] = flag
+                dep_const_flags[name] = cache[id(dep_node)]
 
-        dep_const_flags = {}
-        for name, dep_node in node.op_info.operands.items():
-            if id(dep_node) not in self._constant_folding_visit_flag:
-                flag = self._constant_folding(dep_node)
-                self._constant_folding_visit_flag[id(dep_node)] = flag
-            dep_const_flags[name] = self._constant_folding_visit_flag[id(dep_node)]
-
-        const_flag = False
-        if any(dep_const_flags.values()):
-            if isinstance(node.op_info.operator, ViewOps):
-                dep_node = next(iter(node.op_info.operands.values()))
-                node.to_constant(dep_node.constant_value)
-                const_flag = True
-
-            if isinstance(node.op_info.operator, ElemwiseOps):
-                if all(dep_const_flags.values()) and len(dep_const_flags) > 1:  # NOTE: skip unary ops
-                    expr = node.op_info.code
-                    for name, dep_node in node.op_info.operands.items():
-                        expr = expr.replace(name, f"{dep_node.constant_value:.15f}f")
-                    node.to_constant(eval(expr.replace("f", "")))
+            const_flag = False
+            if any(dep_const_flags.values()):
+                if isinstance(node.op_info.operator, ViewOps):
+                    dep_node = next(iter(node.op_info.operands.values()))
+                    node.to_constant(dep_node.constant_value)
                     const_flag = True
-        return const_flag
+
+                if isinstance(node.op_info.operator, ElemwiseOps):
+                    if all(dep_const_flags.values()) and len(dep_const_flags) > 1:  # NOTE: skip unary ops
+                        expr = node.op_info.code
+                        for name, dep_node in node.op_info.operands.items():
+                            expr = expr.replace(name, f"{dep_node.constant_value:.15f}f")
+                        node.to_constant(eval(expr.replace("f", "")))
+                        const_flag = True
+            return const_flag
+
+        cache = {}
+        constant_folding(node)
 
     def visualize(self, graph_name):
         colors = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}

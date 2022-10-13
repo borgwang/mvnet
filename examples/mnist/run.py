@@ -68,6 +68,7 @@ def main(args):
             Dense(32), ReLU(),
             Dense(10)).to(args.device)
     optim = Adam(net.get_parameters(), lr=args.lr)
+    #optim = SGD(net.get_parameters(), lr=args.lr)
     loss_fn = SoftmaxCrossEntropyLoss()
 
     iterator = BatchIterator(batch_size=args.batch_size)

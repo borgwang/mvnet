@@ -244,8 +244,6 @@ class CLArray(Array):
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
         super().__init__(shape, dtype, op_info, is_lazy)
         self.op_info = SimpleNamespace(operator=None, operands={}, args={}) if op_info is None else op_info
-        self.outdegree = 0
-        self.is_visited = False
 
         if not self.is_lazy:
             if isinstance(data, pyopencl.Buffer):
@@ -438,14 +436,12 @@ class CLArray(Array):
                 node.update_from_eager(eager)
 
         graphoptimizer = GraphOptimizer(root=self)
-        graphoptimizer.build()  # TODO: remove build
         graphoptimizer._rename_operands(node=self)
 
         # original graph
         if GRAPH:
             graph_name = "net"
             graphoptimizer.visualize(graph_name)
-
         # opt1: constant folding
         if OPT_CONSTANT_FOLDING:
             graphoptimizer._constant_folding(node=self)
@@ -480,10 +476,3 @@ class CLArray(Array):
                     f_contiguous = False
                 nitems *= self.shape[i]
         return c_contiguous, f_contiguous
-
-
-"""
-_aaa+(
-(-0.00f* ((_aah+(0.10f*(_ada-_adb)))/0.27f) )  /  pow( ((_adn + (0.00f*((pow(_adr,2.00f))-_adw)))/0.00f), 0.50f)
-)
-"""
