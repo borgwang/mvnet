@@ -16,6 +16,35 @@ class GraphOptimizer:
         self.root = root
         varnamegetter.reset()
 
+    def _constant_folding(self, root):
+        def constant_folding(node):
+            if node.constant_value is not None:
+                return True
+            dep_is_const = []
+            for name, dep_node in node.op_info.operands.items():
+                if id(dep_node) not in cache:
+                    flag = constant_folding(dep_node)
+                    cache[id(dep_node)] = flag
+                dep_is_const.append(cache[id(dep_node)])
+
+            is_const = False
+            if any(dep_is_const):
+                if isinstance(node.op_info.operator, ViewOps):
+                    dep_node = next(iter(node.op_info.operands.values()))
+                    node.to_constant(dep_node.constant_value)
+                    is_const = True
+                if isinstance(node.op_info.operator, ElemwiseOps):
+                    if all(dep_is_const) and len(dep_is_const) > 1:  # NOTE: skip unary ops
+                        expr = node.op_info.code
+                        for name, dep_node in node.op_info.operands.items():
+                            expr = expr.replace(name, f"{dep_node.constant_value:.15f}f")
+                        node.to_constant(eval(expr.replace("f", "")))
+                        is_const = True
+            return is_const
+
+        cache = {}
+        constant_folding(root)
+
     def _elemwise_fusion(self, root):
         def elemwise_fusion(node):
             for name in list(node.op_info.operands):
@@ -61,34 +90,9 @@ class GraphOptimizer:
         name_dict = defaultdict(varnamegetter.get)
         rename_operands(root)
 
-    def _constant_folding(self, root):
-        def constant_folding(node):
-            if node.constant_value is not None:
-                return True
-            dep_is_const = []
-            for name, dep_node in node.op_info.operands.items():
-                if id(dep_node) not in cache:
-                    flag = constant_folding(dep_node)
-                    cache[id(dep_node)] = flag
-                dep_is_const.append(cache[id(dep_node)])
-
-            is_const = False
-            if any(dep_is_const):
-                if isinstance(node.op_info.operator, ViewOps):
-                    dep_node = next(iter(node.op_info.operands.values()))
-                    node.to_constant(dep_node.constant_value)
-                    is_const = True
-                if isinstance(node.op_info.operator, ElemwiseOps):
-                    if all(dep_is_const) and len(dep_is_const) > 1:  # NOTE: skip unary ops
-                        expr = node.op_info.code
-                        for name, dep_node in node.op_info.operands.items():
-                            expr = expr.replace(name, f"{dep_node.constant_value:.15f}f")
-                        node.to_constant(eval(expr.replace("f", "")))
-                        is_const = True
-            return is_const
-
-        cache = {}
-        constant_folding(root)
+    def _viewop_pruning(self, root):
+        # TODO
+        pass
 
     def visualize(self, root, graph_name):
         colors = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}
