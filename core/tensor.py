@@ -1,5 +1,5 @@
 import core.autograd.ops as ops
-from env import GRAPH, BACKEND
+from env import BACKEND
 from core.dtype import float32
 
 from core.backend.numpy import NPArray as CPUArray

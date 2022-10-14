@@ -1,4 +1,3 @@
-from ast import operator
 import copy
 from types import SimpleNamespace
 from functools import lru_cache
@@ -37,9 +36,8 @@ class CLContext:
         self.rng = pyopencl.clrandom.PhiloxGenerator(self.ctx, seed=0)
         self.info = {"build_cnt": 0, "create_buffer_cnt": 0, "release_buffer_cnt": 0}
 
-        if OPENCL_MEM_POOL:
-            alloc = pyopencl.tools.ImmediateAllocator(self.queue)
-            self.mem_pool = pyopencl.tools.MemoryPool(alloc)
+        alloc = pyopencl.tools.ImmediateAllocator(self.queue)
+        self.mem_pool = pyopencl.tools.MemoryPool(alloc)
 
     @lru_cache(maxsize=None)
     def build(self, name, program):
@@ -52,20 +50,12 @@ class CLContext:
         return pyopencl.LocalMemory(size)
 
     def alloc_buffer(self, shape, dtype, hostbuf=None):
-        if OPENCL_MEM_POOL:
-            size = int(dtype().itemsize * prod(shape))
-            buffer = self.mem_pool.allocate(size)
-            if hostbuf is not None:
-                assert isinstance(hostbuf, np.ndarray) and hostbuf.dtype == dtype
-                self.enqueue("copy", buffer, hostbuf)
-            return buffer
-        else:
-            size = int(dtype().itemsize * prod(shape))
-            flags = pyopencl.mem_flags.READ_WRITE
-            if hostbuf is not None:
-                flags |= pyopencl.mem_flags.COPY_HOST_PTR
-            self.info["create_buffer_cnt"] += 1
-            return pyopencl.Buffer(self.ctx, flags, size, hostbuf=hostbuf)
+        size = int(dtype().itemsize * prod(shape))
+        buffer = self.mem_pool.allocate(size)
+        if hostbuf is not None:
+            assert isinstance(hostbuf, np.ndarray) and hostbuf.dtype == dtype
+            self.enqueue("copy", buffer, hostbuf)
+        return buffer
 
     def enqueue(self, task, *args, **kwargs):
         getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs)
@@ -234,7 +224,7 @@ def view_op(op_info):
 
 def register_elemwise_op(func):
     def wrapper(*inputs, **kwargs):
-        if len(inputs) > 1:
+        if len(inputs) > 1 and len(set([i.shape for i in inputs])) > 1:
             inputs = Array.broadcast(*inputs)
         op = func(*inputs)
         code = ELEMWISE_MAPPING[op]
@@ -372,7 +362,6 @@ class CLArray(Array):
 
     def permute(self, axes):
         assert sorted(list(axes)) == list(range(self.ndim)), f"Invalid axes {axes}"
-        shape = tuple(self.shape[a] for a in axes)
         op_info = SimpleNamespace(operator=ViewOps.PERMUTE, operands={"A": self}, args={"axes": axes})
         arr = view_op(op_info)
         if LAZY: arr.op_info = op_info
@@ -465,26 +454,29 @@ class CLArray(Array):
         # original graph
         if GRAPH:
             graph_name = "net"
+            print(f"{graphoptimizer.count(self)} nodes")
             graphoptimizer.visualize(self, graph_name)
         # opt1: constant folding
         if OPT_CONSTANT_FOLDING:
             graphoptimizer._constant_folding(self)
             if GRAPH:
                 graph_name += "_1"
+                print(f"{graphoptimizer.count(self)} nodes after OPT_CONSTANT_FOLDING")
                 graphoptimizer.visualize(self, graph_name)
         # opt2: elemwise fusion
         if OPT_ELEMWISE_FUSION:
             graphoptimizer._elemwise_fusion(self)
             if GRAPH:
                 graph_name += "_2"
+                print(f"{graphoptimizer.count(self)} nodes after OPT_ELEMWISE_FUSION")
                 graphoptimizer.visualize(self, graph_name)
         # opt3: view op pruning
         if OPT_VIEWOP_PRUNING:
             graphoptimizer._viewop_pruning(self)
             if GRAPH:
                 graph_name += "_3"
+                print(f"{graphoptimizer.count(self)} nodes after OPT_VIEWOP_PRUNING")
                 graphoptimizer.visualize(self, graph_name)
-
         recursive_eager(node=self)
         return self
 

@@ -1,5 +1,4 @@
-from env import GRAPH
-from utils.helper import timer, genname
+from utils.helper import genname
 from utils.math import argsort
 
 def unbroadcast(func, shape):
@@ -29,7 +28,6 @@ def autograd_ops(func):
         for i, (ts, grad_fn) in enumerate(zip(tss, grad_fns)):
             if ts.requires_grad and grad_fn:
                 ts.degree += 1
-                #if GRAPH: grad_fn = timer(grad_fn)
                 grad_fn.__name__ = f"grad_fn_{i+1} for {func.__name__}"
                 dependency.append(dict(tensor=ts, grad_fn=grad_fn))
         return Tensor(arr, requires_grad, dependency, name=genname(func.__name__, *tss))
@@ -132,7 +130,6 @@ def relu(arr):
     grad_fn = lambda g: mask * g
     return mask * arr, grad_fn
 """
-
 @autograd_ops
 def relu(arr):
     result = arr.relu()

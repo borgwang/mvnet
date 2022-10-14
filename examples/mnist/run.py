@@ -18,7 +18,7 @@ from utils.data_iterator import BatchIterator
 from utils.downloader import download_url
 from utils.evaluator import AccEvaluator
 from utils.helper import kernelstat
-from env import DEBUG, GRAPH, LAZY, BACKEND
+from env import LAZY, BACKEND
 
 
 def get_one_hot(targets, nb_classes):

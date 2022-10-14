@@ -135,3 +135,15 @@ class GraphOptimizer:
         nx.drawing.nx_pydot.write_dot(G, f"/tmp/{graph_name}.dot")
         os.system(f"dot -Tsvg /tmp/{graph_name}.dot -o /tmp/{graph_name}.svg")
         print(f"[GRAPH] save to /tmp/{graph_name}.svg")
+
+    def count(self, root):
+        def count_node(node):
+            cnt = 0
+            for name, dep_node in node.op_info.operands.items():
+                if not visited[id(dep_node)]:
+                    cnt += count_node(dep_node)
+                cnt += 1
+            visited[id(node)] = True
+            return cnt
+        visited = defaultdict(bool)
+        return count_node(root)
