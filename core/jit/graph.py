@@ -75,15 +75,15 @@ class GraphOptimizer:
 
     def _rename_operands(self, root):
         def rename_operands(node):
-            newoperands = {}
+            operands = {}
             for name, dep_node in node.op_info.operands.items():
                 if not visited[id(dep_node)]:
                     rename_operands(dep_node)
                 new_name = name_dict[id(dep_node)]
-                newoperands[new_name] = dep_node
+                operands[new_name] = dep_node
                 if type(node.op_info.operator) is ElemwiseOps:
                     node.op_info.code = node.op_info.code.replace(name, new_name)
-            node.op_info.operands = newoperands
+            node.op_info.operands = operands
             visited[id(node)] = True
 
         visited = defaultdict(bool)
@@ -96,9 +96,9 @@ class GraphOptimizer:
                 if not visited[id(dep_node)]:
                     viewop_pruning(dep_node)
                 if type(node.op_info.operator) is ViewOps:
-                    node.constant_value = dep_node.constant_value
                     node.op_info = dep_node.op_info
-                    if not dep_node.is_lazy:
+                    node.constant_value = dep_node.constant_value
+                    if not dep_node.is_lazy and dep_node.constant_value is None:
                         node.buffer = dep_node.buffer
             visited[id(node)] = True
         visited = defaultdict(bool)

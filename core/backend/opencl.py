@@ -24,7 +24,6 @@ REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
 # TODO: replace simplenamespace
-# TODO: reuse opencl buffer
 
 class CLContext:
     def __init__(self):
@@ -36,11 +35,15 @@ class CLContext:
         self.ctx = pyopencl.Context(devices)
         self.queue = pyopencl.CommandQueue(self.ctx)
         self.rng = pyopencl.clrandom.PhiloxGenerator(self.ctx, seed=0)
-        self.build_cnt = 0
+        self.info = {"build_cnt": 0, "create_buffer_cnt": 0, "release_buffer_cnt": 0}
+
+        if OPENCL_MEM_POOL:
+            alloc = pyopencl.tools.ImmediateAllocator(self.queue)
+            self.mem_pool = pyopencl.tools.MemoryPool(alloc)
 
     @lru_cache(maxsize=None)
     def build(self, name, program):
-        self.build_cnt += 1
+        self.info["build_cnt"] += 1
         if DEBUG: print(f"[DEBUG] program {name}: \n {program}")
         kernel = pyopencl.Program(self.ctx, program).build().__getattr__(name)
         return lambda *args: kernel(self.queue, *args)
@@ -49,11 +52,20 @@ class CLContext:
         return pyopencl.LocalMemory(size)
 
     def alloc_buffer(self, shape, dtype, hostbuf=None):
-        size = int(dtype().itemsize * prod(shape))
-        flags = pyopencl.mem_flags.READ_WRITE
-        if hostbuf is not None:
-            flags |= pyopencl.mem_flags.COPY_HOST_PTR
-        return pyopencl.Buffer(self.ctx, flags, size, hostbuf=hostbuf)
+        if OPENCL_MEM_POOL:
+            size = int(dtype().itemsize * prod(shape))
+            buffer = self.mem_pool.allocate(size)
+            if hostbuf is not None:
+                assert isinstance(hostbuf, np.ndarray) and hostbuf.dtype == dtype
+                self.enqueue("copy", buffer, hostbuf)
+            return buffer
+        else:
+            size = int(dtype().itemsize * prod(shape))
+            flags = pyopencl.mem_flags.READ_WRITE
+            if hostbuf is not None:
+                flags |= pyopencl.mem_flags.COPY_HOST_PTR
+            self.info["create_buffer_cnt"] += 1
+            return pyopencl.Buffer(self.ctx, flags, size, hostbuf=hostbuf)
 
     def enqueue(self, task, *args, **kwargs):
         getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs)
@@ -65,23 +77,29 @@ def elemwise_op(op_info):
     const_inp = {k: v for k, v in op_info.operands.items() if v.constant_value is not None}
     assert len(set([tuple(x.shape) for x in inp.values()])) <= 1, \
         f"Invalid input shape for elemwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
-
     shape, dtype = op_info.args["shape"], op_info.args["dtype"]
     ret = op_info.args["out"] if op_info.args.get("out", None) is not None else CLArray(shape=shape, dtype=dtype)
-
-    args = "".join("".join(f"int {name}_s{i}, " for name in inp) + f"int res_s{i}," for i in range(ret.ndim))
-    args += "".join(f"int {name}_ofst, " for name in inp)
-    args += "".join(f"__global const float *inp_{name}, " for name in inp)
-    args += "".join(f"const float {name}, " for name in const_inp)
-    update = "".join(f"idx=ptr/res_s{i}; ptr%=res_s{i};" + "".join(f"{name}_i+=idx*{name}_s{i};" for name in inp) for i in range(ret.ndim))
-    assign = ";".join(f"float {name}=inp_{name}[{name}_i+{name}_ofst]" for name in inp)
-
-    op = cl.build("ElemwiseOp", f"""__kernel void ElemwiseOp({args} __global float *ret) {{
-      {";".join(f"int {name}_i=0" for name in inp)};
+    op = cl.build("ElemwiseOp", f"""
+    __kernel void ElemwiseOp(
+      // strides
+      {''.join(''.join(f'int {n}_s{i}, ' for n in inp) + f'int res_s{i}, ' for i in range(ret.ndim))}
+      // offset
+      {''.join(f'int {n}_ofst, ' for n in inp)}
+      // buffer inputs
+      {''.join(f'__global const float *inp_{n}, ' for n in inp)}
+      // constant inputs
+      {''.join(f'const float {n}, ' for n in const_inp)}
+      __global float *ret
+    ) {{
+      {''.join(f'int {n}_i=0; ' for n in inp)}
       int idx=0, gl_id=get_global_id(0); int ptr=gl_id;
-      {update}; {assign};
+      // calculate element indices
+      {''.join(f'idx=ptr/res_s{i}; ptr%=res_s{i}; ' + ''.join(f'{n}_i+=idx*{n}_s{i}; ' for n in inp) for i in range(ret.ndim))}
+      // get elements from input
+      {''.join(f'float {n}=inp_{n}[{n}_i+{n}_ofst]; ' for n in inp)}
       ret[gl_id] = {op_info.code};
-    }}""")
+    }}
+    """)
     args = [int32(s) for ss in zip(*[x.strides for x in (list(inp.values())+[ret])]) for s in ss]
     args += [int32(x.offset) for x in inp.values()]
     args += [x.buffer for x in inp.values()]
@@ -149,7 +167,11 @@ def reduce_op(op_info):
 
     n_grps = (size + grp_size - 1) // grp_size
     ret_shape = calculate_ret_shape(x_shp, axis, keepdims, grp_size, n_grps)
+    # NOTE: for array with constant_value, return a new array filled with the value
+    if x.constant_value is not None:
+        return CLArray.full(ret_shape, x.constant_value, x.dtype)
     ret = CLArray(shape=ret_shape, dtype=x.dtype)
+
     # merge non-target axes
     p1 = [prod(x_shp[:axis])] if axis!=0 else []
     p2 = [prod(x_shp[axis+1:])] if axis!=len(x_shp)-1 else []
@@ -166,7 +188,10 @@ def reduce_op(op_info):
     lcl2gl = "+".join([f"{a_}*{c_}" for a_, c_ in zip(a, c)])
     # NOTE: calculate offset to get the proper global index
     offset = f"gl_id_0*{'0' if axis==0 else '1' if axis==ndim-1 else 'gl_s_2'}*(gl_s_{axis}-size)"
-    op = cl.build("reduce_op", f"""__kernel void reduce_op(int size, int ofst, __global const float *inp, __local float *lcl, __global float *ret) {{
+    op = cl.build("reduce_op", f"""
+    __kernel void reduce_op(
+      int size, int ofst, __global const float *inp, __local float *lcl, __global float *ret
+    ) {{
       {''.join([f'int gl_id_{i}=get_global_id({i});int gl_s_{i}=get_global_size({i});int grp_id_{i}=get_group_id({i});int grp_s_{i}=get_local_size({i});' for i in range(ndim)])}
       int lcl_id = get_local_id({axis});
       lcl[lcl_id] = gl_id_{axis} < size ? inp[{gl2lcl}-{offset}+ofst] : {REDUCE_PAD_VAL[op_info.operator]};
@@ -177,7 +202,8 @@ def reduce_op(op_info):
         barrier(CLK_LOCAL_MEM_FENCE);
       }}
       if (lcl_id == 0) ret[{lcl2gl}] = lcl[0];
-    }}""")
+    }}
+    """)
     local_mem = cl.alloc_local(x.dtype().itemsize * grp_size)
     local_size = tuple(grp_size if i == axis else 1 for i in range(ndim))
     e = op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
@@ -194,7 +220,7 @@ def view_op(op_info):
     inst = copy.copy(x)
     if op_info.operator == ViewOps.EXPAND:
         shape = op_info.args["shape"]
-        strides = [0 if s1 < s2 else inst.strides[i] for i, (s1, s2) in enumerate(zip(inst.shape, shape))]
+        strides = [0 if s1<s2 else inst.strides[i] for i, (s1,s2) in enumerate(zip(inst.shape, shape))]
     elif op_info.operator == ViewOps.RESHAPE:
         shape = op_info.args["shape"]
         strides = (prod(shape[i+1:]) if inst.c_contiguous else prod(shape[:i]) for i in range(len(shape)))
@@ -255,12 +281,13 @@ class CLArray(Array):
                 if data is not None:
                     data = np.asarray(data, dtype=self.dtype)
                     self.shape = data.shape
-                    # TODO: 能否完全挪到 graph optimizer 里判断 constant
                     if self.ndim == 0 or (self.ndim == 1 and self.shape == (1,)):
                         self.constant_value = float(data)
 
                 assert self.shape is not None, "Array shape is None!"
-                self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
+                if self.constant_value is None:
+                    # NOTE: do not allocate buffer for array with a single element
+                    self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
 
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(self.ndim))
@@ -271,8 +298,6 @@ class CLArray(Array):
         self.is_lazy = False
         self.op_info = SimpleNamespace(operator=None, operands={}, args={})
         self.constant_value = value
-        data = np.asarray(value, dtype=self.dtype)
-        self.buffer = cl.alloc_buffer((), self.dtype, data)
 
     @property
     def size(self):
@@ -420,7 +445,6 @@ class CLArray(Array):
 
     # ##### Lazy #####
     def update_from_eager(self, eager):
-        assert self.is_lazy
         self.buffer = eager.buffer
         self.is_lazy = False
         self.op_info = SimpleNamespace(operator=None, operands={})
