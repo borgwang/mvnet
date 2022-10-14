@@ -23,6 +23,9 @@ ELEMWISE_MAPPING = {
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
+# TODO: replace simplenamespace
+# TODO: reuse opencl buffer
+
 class CLContext:
     def __init__(self):
         self.ctx, self.queue = None, None
@@ -244,7 +247,6 @@ class CLArray(Array):
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
         super().__init__(shape, dtype, op_info, is_lazy)
         self.op_info = SimpleNamespace(operator=None, operands={}, args={}) if op_info is None else op_info
-
         if not self.is_lazy:
             if isinstance(data, pyopencl.Buffer):
                 self.buffer = data
@@ -253,7 +255,6 @@ class CLArray(Array):
                 if data is not None:
                     data = np.asarray(data, dtype=self.dtype)
                     self.shape = data.shape
-
                     # TODO: 能否完全挪到 graph optimizer 里判断 constant
                     if self.ndim == 0 or (self.ndim == 1 and self.shape == (1,)):
                         self.constant_value = float(data)
@@ -321,12 +322,6 @@ class CLArray(Array):
         return arr
 
     # ##### View Ops #####
-    def expand(self, shape):
-        op_info = SimpleNamespace(operator=ViewOps.EXPAND, operands={"A": self}, args={"shape": shape})
-        arr = view_op(op_info)
-        if LAZY: arr.op_info = op_info
-        return arr
-
     def reshape(self, shape):
         if -1 in shape:
             size = prod(self.shape)
@@ -340,6 +335,12 @@ class CLArray(Array):
         if not self.c_contiguous and not self.f_contiguous:
             self = self.contiguous()
         op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self}, args={"shape": shape})
+        arr = view_op(op_info)
+        if LAZY: arr.op_info = op_info
+        return arr
+
+    def expand(self, shape):
+        op_info = SimpleNamespace(operator=ViewOps.EXPAND, operands={"A": self}, args={"shape": shape})
         arr = view_op(op_info)
         if LAZY: arr.op_info = op_info
         return arr
@@ -437,7 +438,6 @@ class CLArray(Array):
 
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer._rename_operands(self)
-
         # original graph
         if GRAPH:
             graph_name = "net"
@@ -453,6 +453,12 @@ class CLArray(Array):
             graphoptimizer._elemwise_fusion(self)
             if GRAPH:
                 graph_name += "_2"
+                graphoptimizer.visualize(self, graph_name)
+        # opt3: view op pruning
+        if OPT_VIEWOP_PRUNING:
+            graphoptimizer._viewop_pruning(self)
+            if GRAPH:
+                graph_name += "_3"
                 graphoptimizer.visualize(self, graph_name)
 
         recursive_eager(node=self)

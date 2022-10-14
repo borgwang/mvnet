@@ -91,8 +91,18 @@ class GraphOptimizer:
         rename_operands(root)
 
     def _viewop_pruning(self, root):
-        # TODO
-        pass
+        def viewop_pruning(node):
+            for name, dep_node in node.op_info.operands.items():
+                if not visited[id(dep_node)]:
+                    viewop_pruning(dep_node)
+                if type(node.op_info.operator) is ViewOps:
+                    node.constant_value = dep_node.constant_value
+                    node.op_info = dep_node.op_info
+                    if not dep_node.is_lazy:
+                        node.buffer = dep_node.buffer
+            visited[id(node)] = True
+        visited = defaultdict(bool)
+        viewop_pruning(root)
 
     def visualize(self, root, graph_name):
         colors = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}
@@ -105,7 +115,12 @@ class GraphOptimizer:
                      f"C:{int(node.c_contiguous)} F:{int(node.f_contiguous)}")
             if node.constant_value is not None:
                 label += f"\nCONSTANT={node.constant_value}"
-            if node.op_info.operator is not None: label += f"\n{node.op_info.operator.name}"
+            if node.op_info.operator is not None:
+                label += f"\n{node.op_info.operator.name}"
+                if hasattr(node.op_info, "code"):
+                    label += f"\n{node.op_info.code}"
+                #if hasattr(node.op_info, "operands"):
+                #    label += f"\n{{k: id(v) for k, v in node.op_info.operands.items()}}"
             G.nodes[id(node)]["label"] = label
             G.nodes[id(node)]["shape"] = "box"
             G.nodes[id(node)]["style"] = "filled, dashed" if node.is_lazy else "filled"
@@ -116,8 +131,7 @@ class GraphOptimizer:
                 if edge not in G.edges:
                     G.add_edge(*edge, cnt=1, label=name)
             return G
-        G = nx.DiGraph()
-        G = build_graph(root, G)
+        G = build_graph(root, G=nx.DiGraph())
         nx.drawing.nx_pydot.write_dot(G, f"/tmp/{graph_name}.dot")
         os.system(f"dot -Tsvg /tmp/{graph_name}.dot -o /tmp/{graph_name}.svg")
         print(f"[GRAPH] save to /tmp/{graph_name}.svg")

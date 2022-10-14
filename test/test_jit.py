@@ -299,3 +299,40 @@ def test_graph_optimizer_elemwise_fusion_badcases():
     c = (a + b).exp()
     d = c / c.sum()
     assert np.allclose(d.numpy(), d_np, rtol=1e-3)
+
+def test_graph_optimizer_viewop_pruning_badcases():
+    if not LAZY: return
+
+    a_np = np.random.normal(0, 1, (5, 5))
+    b_np = np.tile(np.exp(a_np).reshape((1, 25)), (25, 1))
+    b_np = b_np * (b_np > 0)
+    a = Tensor(a_np).to("gpu")
+    b = a.exp().reshape((1, 25)).expand((25, 25)).relu()
+    assert np.allclose(b.numpy(), b_np, rtol=1e-3)
+
+    a_np = np.random.normal(0, 1, (5, 5))
+    b_np = np.tile(a_np.reshape((1, 25)), (25, 1))
+    b_np = b_np * (b_np > 0)
+    a = Tensor(a_np).to("gpu")
+    b = a.reshape((1, 25)).expand((25, 25)).relu()
+    assert np.allclose(b.numpy(), b_np, rtol=1e-3)
+
+    a_np = np.random.normal(0, 1, (5, 5))
+    b_np = np.random.normal(0, 1, (5, 5))
+    a = Tensor(a_np).to("gpu").reshape((1, 25)).expand((25, 25))
+    b = Tensor(b_np).to("gpu").reshape((1, 25)).expand((25, 25))
+    a_np = np.tile(a_np.reshape((1, 25)), (25, 1))
+    b_np = np.tile(b_np.reshape((1, 25)), (25, 1))
+    c_np = a_np + b_np
+    c = a + b
+    assert np.allclose(c.numpy(), c_np, rtol=1e-3)
+
+    a_np = np.random.normal(0, 1, (5, 5))
+    b_np = np.random.normal(0, 1, (5, 5))
+    a = Tensor(a_np).to("gpu").reshape((1, 25)).expand((25, 25))
+    b = Tensor(b_np).to("gpu").reshape((1, 25)).expand((25, 25))
+    a_np = np.tile(a_np.reshape((1, 25)), (25, 1))
+    b_np = np.tile(b_np.reshape((1, 25)), (25, 1))
+    c_np = np.exp(a_np) + b_np
+    c = a.exp() + b
+    assert np.allclose(c.numpy(), c_np, rtol=1e-3)
