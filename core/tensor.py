@@ -1,5 +1,5 @@
 import core.autograd.ops as ops
-from env import GRAPH, BACKEND
+from env import BACKEND
 from core.dtype import float32
 
 from core.backend.numpy import NPArray as CPUArray
@@ -20,8 +20,6 @@ class Tensor:
         self.requires_grad = requires_grad
         self.dependency = dependency
         self.degree = 0
-
-        self.bwdcost = 0
 
     def astensor(self, obj):
         if not isinstance(obj, self.__class__):
@@ -82,7 +80,7 @@ class Tensor:
         assert self.requires_grad, "Call backward() on a non-requires-grad tensor."
         self.degree -= 1
         if grad is None:
-            grad = GPUArray([1.0]) if self._gpu else CPUArray([1.0])
+            grad = GPUArray(1.0) if self._gpu else CPUArray(1.0)
             self.degree = 0
         if self._gpu and not isinstance(grad, GPUArray):
             grad = GPUArray(grad, dtype=self.dtype)

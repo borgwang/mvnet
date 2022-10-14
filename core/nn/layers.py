@@ -1,5 +1,3 @@
-import numpy as np
-
 from core.nn.initializer import XavierUniformInit
 from core.nn.initializer import ZerosInit
 
@@ -22,6 +20,7 @@ class Dense(Layer):
                  num_in=None,
                  w_init=XavierUniformInit(),
                  b_init=ZerosInit()):
+        super().__init__()
         self.name = f"dense_(?,{num_out})"
         self.initializers = {"w": w_init, "b": b_init}
         self.shapes = {"w": [num_in, num_out], "b": [1, num_out]}

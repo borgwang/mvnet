@@ -50,8 +50,6 @@ class Array:
     @staticmethod
     def broadcast(*arrs):
         # https://numpy.org/doc/stable/user/basics.broadcasting.html
-        if len(set([arr.shape for arr in arrs])) == 1:
-            return arrs
         reverted_shapes = [arr.shape[::-1] for arr in arrs]
         min_ndim = min([arr.ndim for arr in arrs])
         for i in range(min_ndim):

@@ -18,7 +18,7 @@ from utils.data_iterator import BatchIterator
 from utils.downloader import download_url
 from utils.evaluator import AccEvaluator
 from utils.helper import kernelstat
-from env import DEBUG, GRAPH, LAZY, BACKEND
+from env import LAZY, BACKEND
 
 
 def get_one_hot(targets, nb_classes):
@@ -31,23 +31,20 @@ def prepare_dataset(data_dir):
     try:
         download_url(url, save_path)
     except Exception as e:
-        print('Error downloading dataset: %s' % str(e))
+        print(f"Error downloading dataset: {e}")
         sys.exit(1)
     with gzip.open(save_path, "rb") as f:
         return pickle.load(f, encoding="latin1")
 
-"""
-import line_profiler, signal, sys, atexit
-profile = line_profiler.LineProfiler()
-def handle_exit(*args):
-    profile.print_stats()
-    sys.exit()
-signal.signal(signal.SIGTERM, handle_exit)
-signal.signal(signal.SIGINT, handle_exit)
-atexit.register(handle_exit)
+#import line_profiler, signal, sys, atexit
+#profile = line_profiler.LineProfiler()
+#def handle_exit(*args):
+#    profile.print_stats()
+#    sys.exit()
+#signal.signal(signal.SIGTERM, handle_exit)
+#signal.signal(signal.SIGINT, handle_exit)
+#atexit.register(handle_exit)
 
-@profile
-"""
 def main(args):
     if args.seed >= 0:
         np.random.seed(args.seed)
@@ -72,6 +69,7 @@ def main(args):
 
     iterator = BatchIterator(batch_size=args.batch_size)
     evaluator = AccEvaluator()
+    from core.backend.opencl import cl
     for epoch in range(args.num_ep):
         t_start = time.monotonic()
         for batch in iterator(train_x, train_y):
@@ -80,20 +78,23 @@ def main(args):
             pred = net.forward(x)
             loss = loss_fn(pred, y)
             if args.profile_forward:
-                print(loss.array.eager())
+                if LAZY: print(loss.array.eager())
                 print(kernelstat.info)
                 print("total kernel call: ", kernelstat.total())
+                print(f"opencl info: {cl.info}")
+                print(f"time cost: {time.monotonic() - t_start:.4f}")
                 sys.exit()
             loss.backward()
             optim.step()
             if args.profile_backward:
                 print(kernelstat.info)
                 print("total kernel call: ", kernelstat.total())
+                print(f"opencl info: {cl.info}")
+                print(f"time cost: {time.monotonic() - t_start:.4f}")
                 sys.exit()
 
-        print("Epoch %d tim cost: %.4f" % (epoch, time.monotonic() - t_start))
-        from core.backend.opencl import cl
-        print(f"opencl builld count: {cl.build_cnt}")
+        print(f"Epoch {epoch} time cost: {time.monotonic() - t_start:.4f}")
+        print(f"opencl info: {cl.info}")
         if args.eval:
             test_pred = net.forward(test_x).numpy()
             test_pred_idx = np.argmax(test_pred, axis=1)
