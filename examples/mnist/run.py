@@ -78,7 +78,7 @@ def main(args):
             pred = net.forward(x)
             loss = loss_fn(pred, y)
             if args.profile_forward:
-                if LAZY: print(loss.array.eager())
+                if LAZY: print(loss.numpy())
                 print(kernelstat.info)
                 print("total kernel call: ", kernelstat.total())
                 print(f"opencl info: {cl.info}")
