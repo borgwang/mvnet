@@ -71,7 +71,9 @@ class GraphOptimizer:
                 if not visited[id(dep_node)]:
                     elemwise_fusion(dep_node)
                 if type(node.op_info.operator) is ElemwiseOps and \
-                        type(dep_node.op_info.operator) is ElemwiseOps and outdegree[id(dep_node)] == 1:
+                        type(dep_node.op_info.operator) is ElemwiseOps and \
+                        node.c_contiguous and dep_node.c_contiguous and \
+                        outdegree[id(dep_node)] == 1:
                     node.op_info.operands.pop(name)
                     node.op_info.operands.update(dep_node.op_info.operands)
                     node.op_info.code = node.op_info.code.replace(name, f"({dep_node.op_info.code})")
@@ -142,6 +144,7 @@ class GraphOptimizer:
             if id(node) in G.nodes: return G
             G.add_node(id(node))
             label = (f"{node.shape}\n"
+                     f"{node.strides}\n"
                      f"{id(node)}\n"
                      f"C:{int(node.c_contiguous)} F:{int(node.f_contiguous)}")
             if node.constant_value is not None:

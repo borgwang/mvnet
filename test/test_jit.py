@@ -313,8 +313,14 @@ def test_graph_optimizer_elemwise_fusion_badcases():
 def test_graph_optimizer_viewop_pruning_badcases():
     if not LAZY: return
 
-    """
-    #TODO: fix this tes
+    a_np = np.random.normal(0, 1, (1, 4))
+    b_np = np.tile(np.exp(a_np), (4, 1))
+    b_np = b_np * (b_np > 0)
+    a = Tensor(a_np).to("gpu")
+    b = a.exp().expand((4, 4))
+    b = b.relu()
+    assert np.allclose(b.numpy(), b_np, rtol=1e-3)
+
     a_np = np.random.normal(0, 1, (2, 2))
     b_np = np.tile((np.exp(a_np) - 1).reshape((1, 4)), (4, 1))
     b_np = b_np * (b_np > 0)
@@ -322,7 +328,6 @@ def test_graph_optimizer_viewop_pruning_badcases():
     b = (a.exp() - 1).reshape((1, 4)).expand((4, 4))
     b = b.relu()
     assert np.allclose(b.numpy(), b_np, rtol=1e-3)
-    """
 
     a_np = np.random.normal(0, 1, (5, 5))
     b_np = np.tile(a_np.reshape((1, 25)), (25, 1))
