@@ -16,6 +16,23 @@ class GraphOptimizer:
         self.root = root
         varnamegetter.reset()
 
+    def _rename_operands(self, root):
+        def rename_operands(node):
+            operands = {}
+            for name, dep_node in node.op_info.operands.items():
+                if not visited[id(dep_node)]:
+                    rename_operands(dep_node)
+                new_name = name_dict[id(dep_node)]
+                operands[new_name] = dep_node
+                if type(node.op_info.operator) is ElemwiseOps:
+                    node.op_info.code = node.op_info.code.replace(name, new_name)
+            node.op_info.operands = operands
+            visited[id(node)] = True
+
+        visited = defaultdict(bool)
+        name_dict = defaultdict(varnamegetter.get)
+        rename_operands(root)
+
     def _constant_folding(self, root):
         def constant_folding(node):
             if node.constant_value is not None:
@@ -54,7 +71,9 @@ class GraphOptimizer:
                 if not visited[id(dep_node)]:
                     elemwise_fusion(dep_node)
                 if type(node.op_info.operator) is ElemwiseOps and \
-                        type(dep_node.op_info.operator) is ElemwiseOps and outdegree[id(dep_node)] == 1:
+                        type(dep_node.op_info.operator) is ElemwiseOps and \
+                        node.c_contiguous and dep_node.c_contiguous and \
+                        outdegree[id(dep_node)] == 1:
                     node.op_info.operands.pop(name)
                     node.op_info.operands.update(dep_node.op_info.operands)
                     node.op_info.code = node.op_info.code.replace(name, f"({dep_node.op_info.code})")
@@ -73,23 +92,6 @@ class GraphOptimizer:
         visited = defaultdict(bool)
         elemwise_fusion(root)
 
-    def _rename_operands(self, root):
-        def rename_operands(node):
-            operands = {}
-            for name, dep_node in node.op_info.operands.items():
-                if not visited[id(dep_node)]:
-                    rename_operands(dep_node)
-                new_name = name_dict[id(dep_node)]
-                operands[new_name] = dep_node
-                if type(node.op_info.operator) is ElemwiseOps:
-                    node.op_info.code = node.op_info.code.replace(name, new_name)
-            node.op_info.operands = operands
-            visited[id(node)] = True
-
-        visited = defaultdict(bool)
-        name_dict = defaultdict(varnamegetter.get)
-        rename_operands(root)
-
     def _viewop_pruning(self, root):
         def viewop_pruning(node):
             for name, dep_node in node.op_info.operands.items():
@@ -104,6 +106,37 @@ class GraphOptimizer:
         visited = defaultdict(bool)
         viewop_pruning(root)
 
+    def _elemwise_processing_fusion(self, root):
+        def elemwise_processing_fusion(node):
+            dep_types = defaultdict(list)
+            for name, dep_node in node.op_info.operands.items():
+                if not visited[id(dep_node)]:
+                    elemwise_processing_fusion(dep_node)
+                dep_types[type(dep_node.op_info.operator)].append((name, dep_node))
+            if type(node.op_info.operator) is ElemwiseOps and \
+                    outdegree[id(dep_node)] == 1 and \
+                    len(dep_types[ProcessingOps]) == 1 and len(dep_types[ReduceOps]) == 0 and \
+                    all([not v.is_lazy for k, v in dep_types[ElemwiseOps]]):
+                name, proc_dep = dep_types[ProcessingOps][0]
+                extra_code = node.op_info.code.replace(name, "acc")
+                extra_operands = {**dict(dep_types[ElemwiseOps]), **dict(dep_types[type(None)])}
+                node.op_info = proc_dep.op_info
+                node.op_info.args["extra"] = {"operands": extra_operands, "code": extra_code}
+            visited[id(node)] = True
+
+        def update_outdegree(node):
+            if visited[id(node)]: return
+            for name, dep_node in node.op_info.operands.items():
+                outdegree[id(dep_node)] += 1
+                update_outdegree(dep_node)
+            visited[id(node)] = True
+
+        outdegree = defaultdict(int)
+        visited = defaultdict(bool)
+        update_outdegree(root)
+        visited = defaultdict(bool)
+        elemwise_processing_fusion(root)
+
     def visualize(self, root, graph_name):
         colors = {ReduceOps: "#ecc30b", ElemwiseOps: "#84bcda", ProcessingOps: "#f37748", ViewOps: "#e5e5e5"}
         def build_graph(node, G):
@@ -111,6 +144,7 @@ class GraphOptimizer:
             if id(node) in G.nodes: return G
             G.add_node(id(node))
             label = (f"{node.shape}\n"
+                     f"{node.strides}\n"
                      f"{id(node)}\n"
                      f"C:{int(node.c_contiguous)} F:{int(node.f_contiguous)}")
             if node.constant_value is not None:
@@ -119,10 +153,8 @@ class GraphOptimizer:
                 label += f"\n{node.op_info.operator.name}"
                 if hasattr(node.op_info, "code"):
                     label += f"\n{node.op_info.code}"
-                #if hasattr(node.op_info, "operands"):
-                #    label += f"\n{{k: id(v) for k, v in node.op_info.operands.items()}}"
             G.nodes[id(node)]["label"] = label
-            G.nodes[id(node)]["shape"] = "box"
+            G.nodes[id(node)]["shape"] = "box" if node.constant_value is None else "ellipse"
             G.nodes[id(node)]["style"] = "filled, dashed" if node.is_lazy else "filled"
             G.nodes[id(node)]["fillcolor"] = colors.get(type(node.op_info.operator), "#ffffff")
             for name, subnode in node.op_info.operands.items():

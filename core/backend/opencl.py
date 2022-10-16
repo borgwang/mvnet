@@ -22,7 +22,6 @@ ELEMWISE_MAPPING = {
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
-# TODO: replace simplenamespace
 
 class CLContext:
     def __init__(self):
@@ -34,7 +33,7 @@ class CLContext:
         self.ctx = pyopencl.Context(devices)
         self.queue = pyopencl.CommandQueue(self.ctx)
         self.rng = pyopencl.clrandom.PhiloxGenerator(self.ctx, seed=0)
-        self.info = {"build_cnt": 0, "create_buffer_cnt": 0, "release_buffer_cnt": 0}
+        self.info = {"build_cnt": 0}
 
         alloc = pyopencl.tools.ImmediateAllocator(self.queue)
         self.mem_pool = pyopencl.tools.MemoryPool(alloc)
@@ -65,14 +64,13 @@ cl = CLContext()
 def elemwise_op(op_info):
     inp = {k: v for k, v in op_info.operands.items() if v.constant_value is None}
     const_inp = {k: v for k, v in op_info.operands.items() if v.constant_value is not None}
-    assert len(set([tuple(x.shape) for x in inp.values()])) <= 1, \
-        f"Invalid input shape for elemwise op {inp} {[(id(i), i.shape) for i in inp.values()]}"
     shape, dtype = op_info.args["shape"], op_info.args["dtype"]
     ret = op_info.args["out"] if op_info.args.get("out", None) is not None else CLArray(shape=shape, dtype=dtype)
     op = cl.build("ElemwiseOp", f"""
     __kernel void ElemwiseOp(
       // strides
-      {''.join(''.join(f'int {n}_s{i}, ' for n in inp) + f'int res_s{i}, ' for i in range(ret.ndim))}
+      {''.join(''.join(f'int {n}_s{i}, ' for i in range(arr.ndim)) for n, arr in inp.items())}
+      {''.join(f'int res_s{i}, ' for i in range(ret.ndim))}
       // offset
       {''.join(f'int {n}_ofst, ' for n in inp)}
       // buffer inputs
@@ -84,19 +82,18 @@ def elemwise_op(op_info):
       {''.join(f'int {n}_i=0; ' for n in inp)}
       int idx=0, gl_id=get_global_id(0); int ptr=gl_id;
       // calculate element indices
-      {''.join(f'idx=ptr/res_s{i}; ptr%=res_s{i}; ' + ''.join(f'{n}_i+=idx*{n}_s{i}; ' for n in inp) for i in range(ret.ndim))}
+      {''.join(f'idx=ptr/res_s{i}; ptr%=res_s{i}; ' + ''.join(f'{n}_i+=idx*{n}_s{i}; ' for n in inp if i < inp[n].ndim) for i in range(ret.ndim))}
       // get elements from input
       {''.join(f'float {n}=inp_{n}[{n}_i+{n}_ofst]; ' for n in inp)}
       ret[gl_id] = {op_info.code};
     }}
     """)
-    args = [int32(s) for ss in zip(*[x.strides for x in (list(inp.values())+[ret])]) for s in ss]
+    args = [int32(s) for x in list(inp.values()) + [ret] for s in x.strides]
     args += [int32(x.offset) for x in inp.values()]
     args += [x.buffer for x in inp.values()]
     args += [float32(x.constant_value) for x in const_inp.values()]
     e = op((prod(shape),), None, *args, ret.buffer)
     kernelstat.log(op_info.operator)
-    if GRAPH: e.wait()
     return ret
 
 def matmul_op(op_info):
@@ -114,9 +111,29 @@ def matmul_op(op_info):
         gs *= 2
     gs //= 2
     if DEBUG: print(f"[DEBUG] BS:{BS} M:{M} K:{K} N:{N} grp_size:{gs}")
-    op = cl.build("matmul_op", f"""__kernel void matmul_op(int BS, int M, int N, int K,
-        {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))} int a_ofst, int b_ofst,
-        __global const float *A, __global const float *B, __global float *C) {{
+
+    # extra post compute
+    # TODO: refactor extra
+    extra_inp, extra_const_inp = {}, {}
+    for k, v in op_info.args.get("extra", {}).get("operands", {}).items():
+        if v.constant_value is None: extra_inp[k] = v
+        else: extra_const_inp[k] = v
+    extra_code = op_info.args.get("extra", {}).get("code", "acc")
+    extra_gl2lc, extra_strides = "", ""
+    if extra_inp:
+        extra_strides = ''.join(''.join(f'int {n}_s{i}, ' for i in range(arr.ndim)) for n, arr in extra_inp.items()) + ''.join(f'int res_s{i}, ' for i in range(ret.ndim))
+        extra_gl2lc = ''.join(f'idx=ptr/res_s{i}; ptr%=res_s{i}; ' + ''.join(f'{n}_i+=idx*{n}_s{i}; ' for n, arr in extra_inp.items() if i < arr.ndim) for i in range(ret.ndim))
+
+    op = cl.build("matmul_op", f"""
+    __kernel void matmul_op(
+      int BS, int M, int N, int K,
+      {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
+      int a_ofst, int b_ofst,
+      {extra_strides}
+      {''.join(f'__global const float *inp_{n}, ' for n in extra_inp)}
+      {''.join(f'const float {n}, ' for n in extra_const_inp)}
+      __global const float *A, __global const float *B, __global float *C
+    ) {{
       int bs=get_global_id(0), m=get_global_id(1), n=get_global_id(2), i=get_local_id(1), j=get_local_id(2);
       __local float Alcl[{gs}][{gs}], Blcl[{gs}][{gs}];
       float acc = 0.0f;
@@ -127,12 +144,21 @@ def matmul_op(op_info):
         for (int k=0; k<{gs}; k++) acc += Alcl[i][k] * Blcl[k][j];
         barrier(CLK_LOCAL_MEM_FENCE);
       }}
-      C[bs*M*N+m*N+n] = acc;
+      // C[bs*M*N+m*N+n] = acc;
+      // NOTE: handle non-contiguous extra_inp
+      int k = bs*M*N+m*N+n, ptr=k, idx=0;
+      {''.join(f'int {n}_i=0; ' for n in extra_inp)}
+      {extra_gl2lc}
+      {''.join(f'float {n}=inp_{n}[{n}_i]; ' for n in extra_inp)}
+      C[k] = {extra_code};
     }}""")
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
+    if extra_inp:
+        args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
+    args += [x.buffer for x in extra_inp.values()]
+    args += [float32(x.constant_value) for x in extra_const_inp.values()]
     e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
-    if GRAPH: e.wait()
     kernelstat.log(op_info.operator)
     return ret
 
@@ -157,7 +183,7 @@ def reduce_op(op_info):
 
     n_grps = (size + grp_size - 1) // grp_size
     ret_shape = calculate_ret_shape(x_shp, axis, keepdims, grp_size, n_grps)
-    # NOTE: for array with constant_value, return a new array filled with the value
+    # NOTE: for array with constant_value, return a new array filled with the value directly
     if x.constant_value is not None:
         return CLArray.full(ret_shape, x.constant_value, x.dtype)
     ret = CLArray(shape=ret_shape, dtype=x.dtype)
@@ -199,7 +225,6 @@ def reduce_op(op_info):
     e = op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
     if DEBUG: print(f"[DEBUG] x_shp: {x_shp} ret_shape: {ret_shape} grp_size: {grp_size} n_grps: {n_grps} size: {size} global_size: {global_size} local_size: {local_size} axis={axis} ndim={ndim} offset={offset}")
     kernelstat.log(op_info.operator)
-    if GRAPH: e.wait()
     if n_grps > 1:
         op_info = SimpleNamespace(operator=op_info.operator, operands={"A": ret}, args=op_info.args)
         ret = reduce_op(op_info)
@@ -262,6 +287,7 @@ def invoke(op_info):
 class CLArray(Array):
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
         super().__init__(shape, dtype, op_info, is_lazy)
+        # TODO: replace simplenamespace
         self.op_info = SimpleNamespace(operator=None, operands={}, args={}) if op_info is None else op_info
         if not self.is_lazy:
             if isinstance(data, pyopencl.Buffer):
@@ -271,14 +297,13 @@ class CLArray(Array):
                 if data is not None:
                     data = np.asarray(data, dtype=self.dtype)
                     self.shape = data.shape
-                    if self.ndim == 0 or (self.ndim == 1 and self.shape == (1,)):
+                    if prod(self.shape) == 1:
                         self.constant_value = float(data)
 
                 assert self.shape is not None, "Array shape is None!"
                 if self.constant_value is None:
                     # NOTE: do not allocate buffer for array with a single element
                     self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
-
         # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
         self.strides = tuple(prod(self.shape[i+1:]) for i in range(self.ndim))
         self.c_contiguous, self.f_contiguous = self._calculate_contiguity()
@@ -451,31 +476,38 @@ class CLArray(Array):
 
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer._rename_operands(self)
-        # original graph
+        # naive graph
         if GRAPH:
             graph_name = "net"
-            print(f"{graphoptimizer.count(self)} nodes")
+            print(f"[GRAPH] {graphoptimizer.count(self)} nodes")
             graphoptimizer.visualize(self, graph_name)
-        # opt1: constant folding
-        if OPT_CONSTANT_FOLDING:
-            graphoptimizer._constant_folding(self)
-            if GRAPH:
-                graph_name += "_1"
-                print(f"{graphoptimizer.count(self)} nodes after OPT_CONSTANT_FOLDING")
-                graphoptimizer.visualize(self, graph_name)
-        # opt2: elemwise fusion
-        if OPT_ELEMWISE_FUSION:
-            graphoptimizer._elemwise_fusion(self)
-            if GRAPH:
-                graph_name += "_2"
-                print(f"{graphoptimizer.count(self)} nodes after OPT_ELEMWISE_FUSION")
-                graphoptimizer.visualize(self, graph_name)
-        # opt3: view op pruning
+        # opt1: view op pruning
         if OPT_VIEWOP_PRUNING:
             graphoptimizer._viewop_pruning(self)
             if GRAPH:
+                print(f"[GRAPH] OPT_VIEWOP_PRUNING: #nodes={graphoptimizer.count(self)}")
+                graph_name += "_1"
+                graphoptimizer.visualize(self, graph_name)
+        # opt2: constant folding
+        if OPT_CONSTANT_FOLDING:
+            graphoptimizer._constant_folding(self)
+            if GRAPH:
+                print(f"[GRAPH] OPT_CONSTANT_FOLDING: #nodes={graphoptimizer.count(self)}")
+                graph_name += "_2"
+                graphoptimizer.visualize(self, graph_name)
+        # opt3: elemwise fusion
+        if OPT_ELEMWISE_FUSION:
+            graphoptimizer._elemwise_fusion(self)
+            if GRAPH:
                 graph_name += "_3"
-                print(f"{graphoptimizer.count(self)} nodes after OPT_VIEWOP_PRUNING")
+                print(f"[GRAPH] OPT_ELEMWISE_FUSION: #nodes={graphoptimizer.count(self)}")
+                graphoptimizer.visualize(self, graph_name)
+        # opt4: elemwise processing fusion
+        if OPT_ELEMWISE_PROCESSING_FUSION:
+            graphoptimizer._elemwise_processing_fusion(self)
+            if GRAPH:
+                graph_name += "_4"
+                print(f"[GRAPH] OPT_ELEMWISE_PROCESSING_FUSION: #nodes={graphoptimizer.count(self)}")
                 graphoptimizer.visualize(self, graph_name)
         recursive_eager(node=self)
         return self
