@@ -22,7 +22,6 @@ ELEMWISE_MAPPING = {
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
-# TODO: replace simplenamespace
 
 class CLContext:
     def __init__(self):
@@ -184,7 +183,7 @@ def reduce_op(op_info):
 
     n_grps = (size + grp_size - 1) // grp_size
     ret_shape = calculate_ret_shape(x_shp, axis, keepdims, grp_size, n_grps)
-    # NOTE: for array with constant_value, return a new array filled with the value
+    # NOTE: for array with constant_value, return a new array filled with the value directly
     if x.constant_value is not None:
         return CLArray.full(ret_shape, x.constant_value, x.dtype)
     ret = CLArray(shape=ret_shape, dtype=x.dtype)
@@ -288,6 +287,7 @@ def invoke(op_info):
 class CLArray(Array):
     def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
         super().__init__(shape, dtype, op_info, is_lazy)
+        # TODO: replace simplenamespace
         self.op_info = SimpleNamespace(operator=None, operands={}, args={}) if op_info is None else op_info
         if not self.is_lazy:
             if isinstance(data, pyopencl.Buffer):
@@ -297,7 +297,7 @@ class CLArray(Array):
                 if data is not None:
                     data = np.asarray(data, dtype=self.dtype)
                     self.shape = data.shape
-                    if self.ndim == 0 or (self.ndim == 1 and self.shape == (1,)):
+                    if prod(self.shape) == 1:
                         self.constant_value = float(data)
 
                 assert self.shape is not None, "Array shape is None!"

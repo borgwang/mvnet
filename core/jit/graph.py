@@ -153,8 +153,6 @@ class GraphOptimizer:
                 label += f"\n{node.op_info.operator.name}"
                 if hasattr(node.op_info, "code"):
                     label += f"\n{node.op_info.code}"
-                #if hasattr(node.op_info, "operands"):
-                #    label += f"\n{{k: id(v) for k, v in node.op_info.operands.items()}}"
             G.nodes[id(node)]["label"] = label
             G.nodes[id(node)]["shape"] = "box" if node.constant_value is None else "ellipse"
             G.nodes[id(node)]["style"] = "filled, dashed" if node.is_lazy else "filled"
