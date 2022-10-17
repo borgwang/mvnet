@@ -1,4 +1,5 @@
 import runtime_path  # isort:skip
+import time
 
 import numpy as np
 
@@ -209,7 +210,6 @@ def test_minimal():
         b -= lr * db
     loss_final, w_final, b_final = loss, w, b
 
-    import time
     st = time.monotonic()
     devices = ("gpu",)
     for device in devices:
@@ -471,15 +471,6 @@ def test_minimal_cache_graph():
     loss_final, w_final, b_final = loss, w, b
     print(f"numpy loss: {loss_final}")
 
-
-    # we want to cahce the graph
-    def jit(x, y):
-        pred = x @ w + b
-        return ((pred - y) ** 2).sum()
-
-    # cl array
-    # x,y are placeholders
-    # w,b are parameteres
     device = "gpu"
     x = Tensor(x_np).to(device)
     y = Tensor(y_np).to(device)
@@ -513,7 +504,6 @@ def test_cache_graph():
         #return a.exp() + b
         return (a + b).exp().log().exp().log()
 
-    import time
     for _ in range(5):
         st = time.monotonic()
         a = Tensor(np.random.uniform(0, 1, (128, 1))).to("gpu")
