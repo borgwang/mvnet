@@ -22,7 +22,6 @@ ELEMWISE_MAPPING = {
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
-
 class CLContext:
     def __init__(self):
         self.ctx, self.queue = None, None
@@ -37,6 +36,7 @@ class CLContext:
 
         alloc = pyopencl.tools.ImmediateAllocator(self.queue)
         self.mem_pool = pyopencl.tools.MemoryPool(alloc)
+        self.GRAPH_CACHE = {}
 
     @lru_cache(maxsize=None)
     def build(self, name, program):
@@ -470,46 +470,79 @@ class CLArray(Array):
             for dep_node in node.op_info.operands.values():
                 if dep_node.is_lazy:
                     recursive_eager(dep_node)
-            if node.is_lazy:
+            if node.is_lazy and node is not None:
                 eager = invoke(node.op_info)
                 node.update_from_eager(eager)
 
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer._rename_operands(self)
-        # naive graph
-        if GRAPH:
-            graph_name = "net"
-            print(f"[GRAPH] {graphoptimizer.count(self)} nodes")
-            graphoptimizer.visualize(self, graph_name)
-        # opt1: view op pruning
-        if OPT_VIEWOP_PRUNING:
-            graphoptimizer._viewop_pruning(self)
+        if OPT_GRAPH_CACHE:
+            graph_hash = graphoptimizer.hash(self)
+            print(f"graph hash: {graph_hash}")
+        if not OPT_GRAPH_CACHE or graph_hash not in cl.GRAPH_CACHE:
+            graph_inputs = graphoptimizer.graph_inputs(self)
+            print("first time input nodes: ")
+            print([(k, id(v), v) for k, v in graph_inputs.items()])
+            # naive graph
             if GRAPH:
-                print(f"[GRAPH] OPT_VIEWOP_PRUNING: #nodes={graphoptimizer.count(self)}")
-                graph_name += "_1"
+                graph_name = "net"
+                print(f"[GRAPH] {graphoptimizer.count(self)} nodes")
                 graphoptimizer.visualize(self, graph_name)
-        # opt2: constant folding
-        if OPT_CONSTANT_FOLDING:
-            graphoptimizer._constant_folding(self)
-            if GRAPH:
-                print(f"[GRAPH] OPT_CONSTANT_FOLDING: #nodes={graphoptimizer.count(self)}")
-                graph_name += "_2"
-                graphoptimizer.visualize(self, graph_name)
-        # opt3: elemwise fusion
-        if OPT_ELEMWISE_FUSION:
-            graphoptimizer._elemwise_fusion(self)
-            if GRAPH:
-                graph_name += "_3"
-                print(f"[GRAPH] OPT_ELEMWISE_FUSION: #nodes={graphoptimizer.count(self)}")
-                graphoptimizer.visualize(self, graph_name)
-        # opt4: elemwise processing fusion
-        if OPT_ELEMWISE_PROCESSING_FUSION:
-            graphoptimizer._elemwise_processing_fusion(self)
-            if GRAPH:
-                graph_name += "_4"
-                print(f"[GRAPH] OPT_ELEMWISE_PROCESSING_FUSION: #nodes={graphoptimizer.count(self)}")
-                graphoptimizer.visualize(self, graph_name)
+            # opt1: view op pruning
+            if OPT_VIEWOP_PRUNING:
+                graphoptimizer._viewop_pruning(self)
+                if GRAPH:
+                    print(f"[GRAPH] OPT_VIEWOP_PRUNING: #nodes={graphoptimizer.count(self)}")
+                    graph_name += "_1"
+                    graphoptimizer.visualize(self, graph_name)
+            # opt2: constant folding
+            if OPT_CONSTANT_FOLDING:
+                graphoptimizer._constant_folding(self)
+                if GRAPH:
+                    print(f"[GRAPH] OPT_CONSTANT_FOLDING: #nodes={graphoptimizer.count(self)}")
+                    graph_name += "_2"
+                    graphoptimizer.visualize(self, graph_name)
+            # opt3: elemwise fusion
+            if OPT_ELEMWISE_FUSION:
+                graphoptimizer._elemwise_fusion(self)
+                if GRAPH:
+                    graph_name += "_3"
+                    print(f"[GRAPH] OPT_ELEMWISE_FUSION: #nodes={graphoptimizer.count(self)}")
+                    graphoptimizer.visualize(self, graph_name)
+            # opt4: elemwise processing fusion
+            if OPT_ELEMWISE_PROCESSING_FUSION:
+                graphoptimizer._elemwise_processing_fusion(self)
+                if GRAPH:
+                    graph_name += "_4"
+                    print(f"[GRAPH] OPT_ELEMWISE_PROCESSING_FUSION: #nodes={graphoptimizer.count(self)}")
+                    graphoptimizer.visualize(self, graph_name)
+            if OPT_GRAPH_CACHE:
+                print("caching copy")
+                self_copy = graphoptimizer.deepcopy(self)
+                cl.GRAPH_CACHE[graph_hash] = self_copy
+                graphoptimizer.visualize(self_copy, graph_name+"_copy")
+                graph_inputs_cache = graphoptimizer.graph_inputs(self_copy)
+                print("first time cached input nodes: ")
+                print([(k, id(v), v) for k, v in graph_inputs_cache.items()])
+        else:
+            print("hit graph cache")
+            graphoptimizer.visualize(self, "net_hit")
+
+            cache = cl.GRAPH_CACHE[graph_hash]
+            graph_inputs = graphoptimizer.graph_inputs(self)
+            graph_inputs_cache = graphoptimizer.graph_inputs(cache)
+            print("second time input nodes: ")
+            print([(k, id(v), v) for k, v in graph_inputs.items()])
+            print("read from cache input nodes: ")
+            print([(k, id(v), v) for k, v in graph_inputs_cache.items()])
+            assert set(graph_inputs) == set(graph_inputs_cache)
+            for name in graph_inputs:
+                print(f"update buffer {id(graph_inputs[name])} -> {id(graph_inputs_cache[name])}")
+                graph_inputs_cache[name].buffer = graph_inputs[name].buffer
+            self = cache
+            print(f"eager {id(self)}")
         recursive_eager(node=self)
+        print(f"return {id(self)}")
         return self
 
     def _calculate_contiguity(self):

@@ -94,14 +94,21 @@ class GraphOptimizer:
 
     def _viewop_pruning(self, root):
         def viewop_pruning(node):
-            for name, dep_node in node.op_info.operands.items():
+            for name in list(node.op_info.operands):
+                dep_node = node.op_info.operands[name]
                 if not visited[id(dep_node)]:
-                    viewop_pruning(dep_node)
+                    replace_name = viewop_pruning(dep_node)
+                    if replace_name is not None:
+                        node.op_info.operands.pop(name)
+                        node.op_info.operands[replace_name] = dep_node
+                        node.op_info.code = node.op_info.code.replace(name, replace_name)
                 if type(node.op_info.operator) is ViewOps:
                     node.op_info = dep_node.op_info
                     node.constant_value = dep_node.constant_value
                     if not dep_node.is_lazy and dep_node.constant_value is None:
                         node.buffer = dep_node.buffer
+                return name
+            return None
             visited[id(node)] = True
         visited = defaultdict(bool)
         viewop_pruning(root)
@@ -169,13 +176,55 @@ class GraphOptimizer:
         print(f"[GRAPH] save to /tmp/{graph_name}.svg")
 
     def count(self, root):
-        def count_node(node):
+        def recursive_count(node):
             cnt = 0
             for name, dep_node in node.op_info.operands.items():
                 if not visited[id(dep_node)]:
-                    cnt += count_node(dep_node)
+                    cnt += recursive_count(dep_node)
                 cnt += 1
             visited[id(node)] = True
             return cnt
         visited = defaultdict(bool)
-        return count_node(root)
+        return recursive_count(root)
+
+    def hash(self, root):
+        def recursive_hash(node):
+            dep_hashing = []
+            for name, dep_node in node.op_info.operands.items():
+                if not visited[id(dep_node)]:
+                    dep_hashing.append(recursive_hash(dep_node))
+            node_hashing = hash((node.shape, node.strides, node.dtype, node.constant_value))
+            node_hashing = hash((node_hashing, tuple(dep_hashing)))
+            visited[id(node)] = True
+            return node_hashing
+        visited = defaultdict(bool)
+        return recursive_hash(root)
+
+    def graph_inputs(self, root):
+        def recursive_graph_inputs(node_name, node):
+            for name, dep_node in node.op_info.operands.items():
+                if not visited[id(dep_node)]:
+                    recursive_graph_inputs(name, dep_node)
+            if not node.is_lazy and node.constant_value is None and type(node.op_info.operator) != ViewOps:
+                graph_inputs[node_name] = node
+            visited[id(node)] = True
+        graph_inputs = {}
+        visited = defaultdict(bool)
+        recursive_graph_inputs(node_name="root", node=root)
+        return graph_inputs
+
+    def deepcopy(self, root):
+        def recursive_deepcopy(node):
+            newoperands = {}
+            for name, dep_node in node.op_info.operands.items():
+                if id(dep_node) not in copynode:
+                    dep_node_copy = recursive_deepcopy(dep_node)
+                    copynode[id(dep_node)] = dep_node_copy
+                newoperands[name] = copynode[id(dep_node)]
+            new_op_info = copy.copy(node.op_info)
+            new_op_info.operands = newoperands
+            newnode = node.__class__(shape=node.shape, dtype=node.dtype, op_info=new_op_info, is_lazy=node.is_lazy)
+            newnode.constant_value = node.constant_value
+            return newnode
+        copynode = {}
+        return recursive_deepcopy(node=root)

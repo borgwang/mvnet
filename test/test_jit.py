@@ -442,6 +442,80 @@ def test_graph_optimizer_elemwise_processing_fusion():
 
     c_np = np.tile(c_np, (5, 5))
     d = a @ b + c.exp()
-    #aa = d.numpy()
-    #bb = a_np @ b_np + np.exp(c_np)
     assert np.allclose(d.numpy(), a_np @ b_np + np.exp(c_np), rtol=1e-3)
+
+"""
+def test_cache_graph():
+    if not LAZY: return
+
+    BACKWARD = 0
+
+    np.random.seed(0)
+    lr, BS, idim, odim = 0.0001, 2**6, 2**8, 2**6
+    x_np = np.random.normal(0, 1, (BS, idim)).astype(np.float32)
+    y_np = np.random.normal(0, 1, (BS, odim)).astype(np.float32)
+    w_np = np.random.normal(0, 1, (idim, odim)).astype(np.float32)
+    b_np = np.zeros((1, odim)).astype(np.float32)
+
+    n_epoch = 1
+    # numpy
+    x, y, w, b = x_np.copy(), y_np.copy(), w_np.copy(), b_np.copy()
+    for epoch in range(n_epoch):
+        pred = x @ w + b
+        err = pred - y
+        loss = (err**2).sum()
+        if BACKWARD:
+            dw = x.T @ (2 * err)
+            db = (2 * err).sum(axis=0, keepdims=True)
+            w -= lr * dw
+            b -= lr * db
+    loss_final, w_final, b_final = loss, w, b
+    print(f"numpy loss: {loss_final}")
+
+
+    # we want to cahce the graph
+    def jit(x, y):
+        pred = x @ w + b
+        return ((pred - y) ** 2).sum()
+
+    # cl array
+    # x,y are placeholders
+    # w,b are parameteres
+    device = "gpu"
+    x = Tensor(x_np).to(device)
+    y = Tensor(y_np).to(device)
+    w = Tensor(w_np, requires_grad=True).to(device)
+    b = Tensor(b_np, requires_grad=True).to(device)
+    for epoch in range(n_epoch):
+        w.zero_grad()
+        b.zero_grad()
+        pred = x @ w + b
+        err = pred - y
+        loss = (err ** 2).sum()
+        if BACKWARD:
+            loss.backward()
+            w -= lr * w.grad
+            b -= lr * b.grad
+            w.array.eager()
+            b.array.eager()
+    print(f"opencl loss: {loss.array.numpy()}")
+    print(kernelstat.info)
+    print(kernelstat.total())
+
+    assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
+    assert np.allclose(w.numpy(), w_final, rtol=1e-3)
+    assert np.allclose(b.numpy(), b_final, rtol=1e-3)
+"""
+
+def test_cache_graph():
+    if not LAZY: return
+    np.random.seed(0)
+
+    def jit(a, b):
+        return a + b
+
+    for _ in range(2):
+        a = Tensor(np.random.uniform(0, 1, (3, 1))).to("gpu")
+        b = Tensor(np.random.uniform(0, 1, (3, 3))).to("gpu")
+        c = jit(a, b)
+        print(c.numpy())
