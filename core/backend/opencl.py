@@ -158,6 +158,7 @@ def matmul_op(op_info):
         args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
     args += [x.buffer for x in extra_inp.values()]
     args += [float32(x.constant_value) for x in extra_const_inp.values()]
+    print(args)
     e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
     kernelstat.log(op_info.operator)
     return ret
@@ -458,31 +459,26 @@ class CLArray(Array):
         return cls(data=buffer, shape=shape, dtype=dtype)
 
     # ##### Lazy #####
-    def update_from_eager(self, eager):
-        self.buffer = eager.buffer
-        self.is_lazy = False
-        self.op_info = SimpleNamespace(operator=None, operands={})
-        self.constant_value = eager.constant_value
-        return self
-
     def eager(self):
         def recursive_eager(node):
-            for dep_node in node.op_info.operands.values():
+            operands = {}
+            for name in list(node.op_info.operands):
+                dep_node = node.op_info.operands[name]
                 if dep_node.is_lazy:
-                    recursive_eager(dep_node)
+                    dep_node = recursive_eager(dep_node)
+                operands[name] = dep_node
+            # construct op_info with eager operands
             if node.is_lazy and node is not None:
-                eager = invoke(node.op_info)
-                node.update_from_eager(eager)
+                op_info = copy.copy(node.op_info)
+                op_info.operands = operands
+                node = invoke(op_info)
+            return node
 
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer._rename_operands(self)
         if OPT_GRAPH_CACHE:
             graph_hash = graphoptimizer.hash(self)
-            print(f"graph hash: {graph_hash}")
         if not OPT_GRAPH_CACHE or graph_hash not in cl.GRAPH_CACHE:
-            graph_inputs = graphoptimizer.graph_inputs(self)
-            print("first time input nodes: ")
-            print([(k, id(v), v) for k, v in graph_inputs.items()])
             # naive graph
             if GRAPH:
                 graph_name = "net"
@@ -517,33 +513,19 @@ class CLArray(Array):
                     print(f"[GRAPH] OPT_ELEMWISE_PROCESSING_FUSION: #nodes={graphoptimizer.count(self)}")
                     graphoptimizer.visualize(self, graph_name)
             if OPT_GRAPH_CACHE:
-                print("caching copy")
-                self_copy = graphoptimizer.deepcopy(self)
-                cl.GRAPH_CACHE[graph_hash] = self_copy
-                graphoptimizer.visualize(self_copy, graph_name+"_copy")
-                graph_inputs_cache = graphoptimizer.graph_inputs(self_copy)
-                print("first time cached input nodes: ")
-                print([(k, id(v), v) for k, v in graph_inputs_cache.items()])
+                cl.GRAPH_CACHE[graph_hash] = self
         else:
             print("hit graph cache")
-            graphoptimizer.visualize(self, "net_hit")
-
-            cache = cl.GRAPH_CACHE[graph_hash]
             graph_inputs = graphoptimizer.graph_inputs(self)
+            cache = cl.GRAPH_CACHE[graph_hash]
             graph_inputs_cache = graphoptimizer.graph_inputs(cache)
-            print("second time input nodes: ")
-            print([(k, id(v), v) for k, v in graph_inputs.items()])
-            print("read from cache input nodes: ")
-            print([(k, id(v), v) for k, v in graph_inputs_cache.items()])
+            #print(graph_inputs)
+            #print(graph_inputs_cache)
             assert set(graph_inputs) == set(graph_inputs_cache)
             for name in graph_inputs:
-                print(f"update buffer {id(graph_inputs[name])} -> {id(graph_inputs_cache[name])}")
                 graph_inputs_cache[name].buffer = graph_inputs[name].buffer
             self = cache
-            print(f"eager {id(self)}")
-        recursive_eager(node=self)
-        print(f"return {id(self)}")
-        return self
+        return recursive_eager(node=self)
 
     def _calculate_contiguity(self):
         # https://github.com/numpy/numpy/blob/4c60b3263ac50e5e72f6a909e156314fc3c9cba0/numpy/core/src/multiarray/flagsobject.c#L115

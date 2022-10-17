@@ -444,11 +444,10 @@ def test_graph_optimizer_elemwise_processing_fusion():
     d = a @ b + c.exp()
     assert np.allclose(d.numpy(), a_np @ b_np + np.exp(c_np), rtol=1e-3)
 
-"""
-def test_cache_graph():
+def test_minimal_cache_graph():
     if not LAZY: return
 
-    BACKWARD = 0
+    BACKWARD = 1
 
     np.random.seed(0)
     lr, BS, idim, odim = 0.0001, 2**6, 2**8, 2**6
@@ -505,17 +504,19 @@ def test_cache_graph():
     assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
     assert np.allclose(w.numpy(), w_final, rtol=1e-3)
     assert np.allclose(b.numpy(), b_final, rtol=1e-3)
-"""
 
 def test_cache_graph():
     if not LAZY: return
     np.random.seed(0)
 
     def jit(a, b):
-        return a + b
+        #return a.exp() + b
+        return (a + b).exp().log().exp().log()
 
-    for _ in range(2):
-        a = Tensor(np.random.uniform(0, 1, (3, 1))).to("gpu")
-        b = Tensor(np.random.uniform(0, 1, (3, 3))).to("gpu")
+    import time
+    for _ in range(5):
+        st = time.monotonic()
+        a = Tensor(np.random.uniform(0, 1, (128, 1))).to("gpu")
+        b = Tensor(np.random.uniform(0, 1, (128, 128))).to("gpu")
         c = jit(a, b)
-        print(c.numpy())
+        print(f"res: {c.numpy().mean():.6f} timecost: {time.monotonic() - st:.4f}")

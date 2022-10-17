@@ -101,14 +101,29 @@ class GraphOptimizer:
                     if replace_name is not None:
                         node.op_info.operands.pop(name)
                         node.op_info.operands[replace_name] = dep_node
-                        node.op_info.code = node.op_info.code.replace(name, replace_name)
+                        if hasattr(node.op_info, "code"):
+                            node.op_info.code = node.op_info.code.replace(name, replace_name)
                 if type(node.op_info.operator) is ViewOps:
                     node.op_info = dep_node.op_info
                     node.constant_value = dep_node.constant_value
                     if not dep_node.is_lazy and dep_node.constant_value is None:
                         node.buffer = dep_node.buffer
-                return name
+                    return name
             return None
+            visited[id(node)] = True
+        visited = defaultdict(bool)
+        viewop_pruning(root)
+
+    def _viewop_pruning_bk(self, root):
+        def viewop_pruning(node):
+            for name, dep_node in node.op_info.operands.items():
+                if not visited[id(dep_node)]:
+                    viewop_pruning(dep_node)
+                if type(node.op_info.operator) is ViewOps:
+                    node.op_info = dep_node.op_info
+                    node.constant_value = dep_node.constant_value
+                    if not dep_node.is_lazy and dep_node.constant_value is None:
+                        node.buffer = dep_node.buffer
             visited[id(node)] = True
         visited = defaultdict(bool)
         viewop_pruning(root)
