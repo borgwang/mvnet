@@ -38,7 +38,7 @@ class CLContext:
         self.mem_pool = pyopencl.tools.MemoryPool(alloc)
         self.GRAPH_CACHE = {}
 
-    @lru_cache(maxsize=None)
+    #@lru_cache(maxsize=None)
     def build(self, name, program):
         self.info["build_cnt"] += 1
         if DEBUG: print(f"[DEBUG] program {name}: \n {program}")
@@ -158,7 +158,6 @@ def matmul_op(op_info):
         args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
     args += [x.buffer for x in extra_inp.values()]
     args += [float32(x.constant_value) for x in extra_const_inp.values()]
-    print(args)
     e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
     kernelstat.log(op_info.operator)
     return ret
@@ -467,11 +466,15 @@ class CLArray(Array):
                 if dep_node.is_lazy:
                     dep_node = recursive_eager(dep_node)
                 operands[name] = dep_node
-            # construct op_info with eager operands
             if node.is_lazy and node is not None:
+                # construct op_info with eager operands
                 op_info = copy.copy(node.op_info)
                 op_info.operands = operands
-                node = invoke(op_info)
+                newnode = invoke(op_info)
+                if type(node.op_info.operator) is ViewOps:
+                    newnode.shape, newnode.strides = node.shape, node.strides
+                    newnode.c_contiguous, newnode.f_contiguous = newnode._calculate_contiguity()
+                node = newnode
             return node
 
         graphoptimizer = GraphOptimizer(root=self)
