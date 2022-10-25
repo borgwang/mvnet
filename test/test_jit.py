@@ -456,7 +456,7 @@ def test_minimal_cache_graph():
     w_np = np.random.normal(0, 1, (idim, odim)).astype(np.float32)
     b_np = np.zeros((1, odim)).astype(np.float32)
 
-    n_epoch = 2
+    n_epoch = 1
     # numpy
     x, y, w, b = x_np.copy(), y_np.copy(), w_np.copy(), b_np.copy()
     for epoch in range(n_epoch):
@@ -469,6 +469,7 @@ def test_minimal_cache_graph():
             w -= lr * dw
             b -= lr * db
             print(w.sum())
+            print(b.sum())
     loss_final, w_final, b_final = loss, w, b
 
     device = "gpu"
@@ -488,10 +489,12 @@ def test_minimal_cache_graph():
             b -= lr * b.grad
             w.array.eager()
             b.array.eager()
+            # NOTE: buggy. inplce
+            import pdb; pdb.set_trace()
+            print()
     print(kernelstat.info)
     print(kernelstat.total())
-
-    #assert np.allclose(loss, loss_final, rtol=1e-3)
+    assert np.allclose(loss.numpy(), loss_final, rtol=1e-3)
     assert np.allclose(w.numpy(), w_final, rtol=1e-3)
     assert np.allclose(b.numpy(), b_final, rtol=1e-3)
 
@@ -499,13 +502,23 @@ def test_cache_graph():
     if not LAZY: return
     np.random.seed(0)
 
-    def jit(a, b):
-        #return a.exp() + b
-        return (a + b).exp().log().exp().log()
+    A = np.random.uniform(0, 1, (5, 512, 1))
+    B = np.random.uniform(0, 1, (5, 512, 512))
 
-    for _ in range(5):
+    for i in range(5):
         st = time.monotonic()
-        a = Tensor(np.random.uniform(0, 1, (128, 1))).to("gpu")
-        b = Tensor(np.random.uniform(0, 1, (128, 128))).to("gpu")
-        c = jit(a, b)
-        print(f"res: {c.numpy().mean():.6f} timecost: {time.monotonic() - st:.4f}")
+        a = Tensor(A[i]).to("gpu")
+        b = Tensor(B[i]).to("gpu")
+        c = (a + b).exp().log().exp().log().exp()
+        expect = np.exp(np.log(np.exp(np.log(np.exp(A[i]+B[i])))))
+        assert np.allclose(c.numpy(), expect, rtol=1e-3)
+        print(f"timecost: {time.monotonic()-st:.4f}")
+    """
+    w = Tensor(np.random.uniform(0, 1, (64, 64))).to("gpu")
+    print(w.array)
+    w -= 0.0001 * (w * 0.1).exp()
+    print(w.numpy().sum())
+    print(w.numpy().sum())
+    print(w.numpy().sum())
+    print()
+    """

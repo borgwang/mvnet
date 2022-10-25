@@ -298,7 +298,7 @@ class CLArray(Array):
                     data = np.asarray(data, dtype=self.dtype)
                     self.shape = data.shape
                     if prod(self.shape) == 1:
-                        self.constant_value = float(data)
+                        self.constant_value = np.float32(data)
 
                 assert self.shape is not None, "Array shape is None!"
                 if self.constant_value is None:
@@ -457,8 +457,22 @@ class CLArray(Array):
         buffer = cl.rng.normal(mu=loc, sigma=scale, shape=shape, dtype=dtype, cq=cl.queue).data
         return cls(data=buffer, shape=shape, dtype=dtype)
 
+    def update_from_eager(self, eager):
+        self.buffer = eager.buffer
+        self.is_lazy = False
+        self.op_info = SimpleNamespace(operator=None, operands={})
+        self.constant_value = eager.constant_value
+        return self
+
     # ##### Lazy #####
     def eager(self):
+        def recursive_eager_inplace(node):
+            for dep_node in node.op_info.operands.values():
+                if dep_node.is_lazy:
+                    recursive_eager(dep_node)
+            if node.is_lazy:
+                eager = invoke(node.op_info)
+                node.update_from_eager(eager)
         def recursive_eager(node):
             operands = {}
             for name in list(node.op_info.operands):
@@ -466,16 +480,26 @@ class CLArray(Array):
                 if dep_node.is_lazy:
                     dep_node = recursive_eager(dep_node)
                 operands[name] = dep_node
+
             if node.is_lazy and node is not None:
                 # construct op_info with eager operands
                 op_info = copy.copy(node.op_info)
                 op_info.operands = operands
-                newnode = invoke(op_info)
+                eager = invoke(op_info)
+                eager.op_info = SimpleNamespace(operator=None, operands={})
+                eager.constant_value = node.constant_value
                 if type(node.op_info.operator) is ViewOps:
-                    newnode.shape, newnode.strides = node.shape, node.strides
-                    newnode.c_contiguous, newnode.f_contiguous = newnode._calculate_contiguity()
-                node = newnode
+                    eager.shape, eager.strides = node.shape, node.strides
+                    eager.c_contiguous, eager.f_contiguous = eager._calculate_contiguity()
+                if node.op_info.args.get("out", None) is None:
+                    node = eager
+                else:
+                    self.update_from_eager(eager)
+                    node = self
             return node
+
+        if not OPT_GRAPH_CACHE:
+            recursive_eager = recursive_eager_inplace
 
         graphoptimizer = GraphOptimizer(root=self)
         graphoptimizer._rename_operands(self)
@@ -518,17 +542,18 @@ class CLArray(Array):
             if OPT_GRAPH_CACHE:
                 cl.GRAPH_CACHE[graph_hash] = self
         else:
-            print("hit graph cache")
             graph_inputs = graphoptimizer.graph_inputs(self)
             cache = cl.GRAPH_CACHE[graph_hash]
             graph_inputs_cache = graphoptimizer.graph_inputs(cache)
-            #print(graph_inputs)
-            #print(graph_inputs_cache)
             assert set(graph_inputs) == set(graph_inputs_cache)
             for name in graph_inputs:
                 graph_inputs_cache[name].buffer = graph_inputs[name].buffer
             self = cache
-        return recursive_eager(node=self)
+        if not OPT_GRAPH_CACHE:
+            recursive_eager(node=self)
+            return self
+        else:
+            return recursive_eager(node=self)
 
     def _calculate_contiguity(self):
         # https://github.com/numpy/numpy/blob/4c60b3263ac50e5e72f6a909e156314fc3c9cba0/numpy/core/src/multiarray/flagsobject.c#L115

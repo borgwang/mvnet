@@ -220,7 +220,7 @@ class GraphOptimizer:
             for name, dep_node in node.op_info.operands.items():
                 if not visited[id(dep_node)]:
                     recursive_graph_inputs(name, dep_node)
-            if not node.is_lazy and node.constant_value is None and type(node.op_info.operator) != ViewOps:
+            if not node.is_lazy and node.constant_value is None:
                 graph_inputs[node_name] = node
             visited[id(node)] = True
         graph_inputs = {}
@@ -238,8 +238,8 @@ class GraphOptimizer:
                 newoperands[name] = copynode[id(dep_node)]
             new_op_info = copy.copy(node.op_info)
             new_op_info.operands = newoperands
-            newnode = node.__class__(shape=node.shape, dtype=node.dtype, op_info=new_op_info, is_lazy=node.is_lazy)
-            newnode.constant_value = node.constant_value
-            return newnode
+            tnode = node.__class__(shape=node.shape, dtype=node.dtype, op_info=new_op_info, is_lazy=node.is_lazy)
+            tnode.constant_value = node.constant_value
+            return tnode
         copynode = {}
         return recursive_deepcopy(node=root)
