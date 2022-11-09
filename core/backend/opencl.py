@@ -124,9 +124,44 @@ def matmul_op(op_info):
         extra_strides = ''.join(''.join(f'int {n}_s{i}, ' for i in range(arr.ndim)) for n, arr in extra_inp.items()) + ''.join(f'int res_s{i}, ' for i in range(ret.ndim))
         extra_gl2lc = ''.join(f'idx=ptr/res_s{i}; ptr%=res_s{i}; ' + ''.join(f'{n}_i+=idx*{n}_s{i}; ' for n, arr in extra_inp.items() if i < arr.ndim) for i in range(ret.ndim))
 
+    #op = cl.build("matmul_op", f"""
+    #__kernel void matmul_op(
+    #  int M, int N, int K,
+    #  {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
+    #  int a_ofst, int b_ofst,
+    #  {extra_strides}
+    #  {''.join(f'__global const float *inp_{n}, ' for n in extra_inp)}
+    #  {''.join(f'const float {n}, ' for n in extra_const_inp)}
+    #  __global const float *A, __global const float *B, __global float *C
+    #) {{
+    #  int bs=get_global_id(0), m=get_global_id(1), n=get_global_id(2), i=get_local_id(1), j=get_local_id(2);
+    #  __local float Alcl[{gs}][{gs}], Blcl[{gs}][{gs}];
+    #  float acc = 0.0f;
+    #  for (int t=0; t<K/{gs}; t++) {{
+    #    Alcl[i][j] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j)*A_s2 + a_ofst];
+    #    Blcl[i][j] = B[bs*B_s0 + (t*{gs}+i)*B_s1 + n*B_s2 + b_ofst];
+    #    barrier(CLK_LOCAL_MEM_FENCE);
+    #    for (int k=0; k<{gs}; k++) acc += Alcl[i][k] * Blcl[k][j];
+    #    barrier(CLK_LOCAL_MEM_FENCE);
+    #  }}
+    #  // C[bs*M*N+m*N+n] = acc;
+    #  // NOTE: handle non-contiguous extra_inp
+    #  int k = bs*M*N+m*N+n, ptr=k, idx=0;
+    #  {''.join(f'int {n}_i=0; ' for n in extra_inp)}
+    #  {extra_gl2lc}
+    #  {''.join(f'float {n}=inp_{n}[{n}_i]; ' for n in extra_inp)}
+    #  C[k] = {extra_code};
+    #}}""")
+
+    WPT = 2 if gs == 8 else 1
+    RTS = gs // WPT  # 2
+    if DEBUG: print(f"[DEBUG] WPT:{WPT} RTS:{RTS}")
+
+    # TODO: optimize gemm by assigning more work to a single thread. see: https://cnugteren.github.io/tutorial/pages/page5.html
+    # currently it's buggy. run `DEBUG=1 LAZY=0 GRAPH=0 pytest -s test/test_ndarray.py -k test_faster_matmul_op` to reproduce
     op = cl.build("matmul_op", f"""
     __kernel void matmul_op(
-      int BS, int M, int N, int K,
+      int M, int N, int K,
       {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
       int a_ofst, int b_ofst,
       {extra_strides}
@@ -136,29 +171,38 @@ def matmul_op(op_info):
     ) {{
       int bs=get_global_id(0), m=get_global_id(1), n=get_global_id(2), i=get_local_id(1), j=get_local_id(2);
       __local float Alcl[{gs}][{gs}], Blcl[{gs}][{gs}];
-      float acc = 0.0f;
+      float acc[{WPT}];
+      for (int w=0; w<{WPT}; w++) acc[w] = 0.0f;
       for (int t=0; t<K/{gs}; t++) {{
-        Alcl[i][j] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j)*A_s2 + a_ofst];
-        Blcl[i][j] = B[bs*B_s0 + (t*{gs}+i)*B_s1 + n*B_s2 + b_ofst];
+        for (int w=0; w<{WPT}; w++) {{
+          Alcl[i][j+w*{RTS}] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j+w*{RTS})*A_s2 + a_ofst];
+          Blcl[i][j+w*{RTS}] = B[bs*B_s0 + (t*{gs}+i)*B_s1 + (n+w*{RTS})*B_s2 + b_ofst];
+        }}
         barrier(CLK_LOCAL_MEM_FENCE);
-        for (int k=0; k<{gs}; k++) acc += Alcl[i][k] * Blcl[k][j];
+        for (int k=0; k<{gs}; k++) {{
+          for (int w=0; w<{WPT}; w++)
+            acc[w] += Alcl[i][k] * Blcl[k][j+w*{RTS}];
+        }}
         barrier(CLK_LOCAL_MEM_FENCE);
       }}
-      // C[bs*M*N+m*N+n] = acc;
+      for (int w=0; w<{WPT}; w++) {{
+        C[bs*M*N+m*N+(n+w*{RTS})] = acc[w];
+      }}
       // NOTE: handle non-contiguous extra_inp
-      int k = bs*M*N+m*N+n, ptr=k, idx=0;
-      {''.join(f'int {n}_i=0; ' for n in extra_inp)}
-      {extra_gl2lc}
-      {''.join(f'float {n}=inp_{n}[{n}_i]; ' for n in extra_inp)}
-      C[k] = {extra_code};
+      //int k = bs*M*N+m*N+n, ptr=k, idx=0;
+      //{''.join(f'int {n}_i=0; ' for n in extra_inp)}
+      //{extra_gl2lc}
+      //{''.join(f'float {n}=inp_{n}[{n}_i]; ' for n in extra_inp)}
+      //C[k] = {extra_code};
     }}""")
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
-    args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
+    args = [int32(x) for x in [M, N, K] + strides + [a.offset, b.offset]]
     if extra_inp:
         args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
     args += [x.buffer for x in extra_inp.values()]
     args += [float32(x.constant_value) for x in extra_const_inp.values()]
-    e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
+    e = op((BS, M, N//WPT), (1, gs, gs//WPT), *args, a.buffer, b.buffer, ret.buffer)
+    e.wait()
     kernelstat.log(op_info.operator)
     return ret
 
