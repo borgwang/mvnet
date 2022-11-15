@@ -71,11 +71,10 @@ llvm.initialize_native_target()
 llvm.initialize_native_asmprinter()
 
 # simple reduce
-float_type = ir.FloatType()
 func_type = ir.FunctionType(ir.FloatType(), [ir.FloatType().as_pointer(), ir.IntType(64), ir.IntType(64)])
 module = ir.Module()
 
-func = ir.Function(module, func_type, name="reduce_sum")
+func = ir.Function(module, func_type, name="reduce_op")
 
 bentry = ir.IRBuilder(func.append_basic_block(name="entry"))
 bloop0 = ir.IRBuilder(func.append_basic_block(name="loop0"))
@@ -83,9 +82,6 @@ bloopexit0 = ir.IRBuilder(func.append_basic_block(name="loopexit0"))
 bloop1 = ir.IRBuilder(func.append_basic_block(name="loop1"))
 bloopexit1 = ir.IRBuilder(func.append_basic_block(name="loopexit1"))
 bexit = ir.IRBuilder(func.append_basic_block(name="exit"))
-
-#acc = bentry.phi(ir.FloatType(), name="acc")
-#acc.add_incoming(ir.Constant(acc.type, 0.0), bentry._block)
 
 bentry.branch(bloop0._block)
 acc0 = bloop0.phi(ir.FloatType(), name="acc0")
@@ -125,13 +121,6 @@ bloopexit1.cbranch(
 bloop1.branch(bloopexit1._block)
 bexit.ret(added0)
 
-"""
-func2 = ir.Function(module, func_type, name="reduce_sum2")
-bentry2 = ir.IRBuilder(func2.append_basic_block(name="entry2"))
-result = bentry2.call(func, func.args)
-bentry2.ret(result)
-"""
-
 print("-------- IR original ---------")
 print(str(module))
 llmod = llvm.parse_assembly(str(module))
@@ -155,11 +144,11 @@ def run():
         print("-------- Assembly ---------")
         print(target_machine.emit_assembly(llmod))
 
-        func_ptr = engine.get_function_address("reduce_sum")
+        func_ptr = engine.get_function_address("reduce_op")
         func = CFUNCTYPE(c_float, POINTER(c_float), c_int64, c_int64)(func_ptr)
 
         import time
-        XS, YS = 1024, 1024
+        XS, YS = 2048, 2048
         np.random.seed(0)
         arr = np.random.uniform(0, 1, (XS, YS)).astype(np.float32)
         print(arr)
@@ -174,6 +163,5 @@ def run():
         expect = arr.sum()
         et = time.monotonic()
         print(f"expect: {expect:.4f} cost: {(et-st)*100:.2f}ms")
-
 
 run()
