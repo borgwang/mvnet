@@ -18,8 +18,13 @@ mvnet is a small but fully functional deep learning framework built on top of [t
 - backend
   - support cuda backend
 
-### Laziness
+### Backends
+#### llvm?
+- build llvm IR for basic ops and leave the rest to llvm (machine code generation)
+- http://ian-bertolacci.github.io/posts/writing_fibonacci_in_LLVM_with_llvmlite
+- https://www.cs.cornell.edu/~asampson/blog/llvm.html
 
+### Laziness
 - A lazy node attributes: shape, strides, operator, operands, extra args
 - Recursive invoke the computation when we call eager on a lazy node
 

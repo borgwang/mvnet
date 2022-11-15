@@ -100,4 +100,4 @@ examples/nn_paint/data/*
 examples/binary_classification/data/*
 examples/mnist/compare_tf.py
 *.png
-
+tmp
