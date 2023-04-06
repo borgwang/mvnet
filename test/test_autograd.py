@@ -2,8 +2,9 @@ import runtime_path  # isort:skip
 
 import numpy as np
 
-from core.tensor import Tensor
-from env import BACKEND, LAZY
+from mvnet.env import BACKEND, LAZY
+from mvnet.tensor import Tensor
+
 
 def test_add_op():
   devices = ("gpu", "cpu")
@@ -215,7 +216,7 @@ def test_slice():
 """
 
 def test_minimal():
-  from utils.helper import kernelstat
+  from mvnet.utils.helper import kernelstat
   np.random.seed(0)
   n_epoch = 300
   lr = 0.0001

@@ -1,5 +1,6 @@
-from utils.helper import genname
-from utils.math import argsort
+from mvnet.utils.helper import genname
+from mvnet.utils.math import argsort
+
 
 def unbroadcast(func, shape):
   def wrapper(*args, **kwargs):
@@ -17,7 +18,7 @@ def unbroadcast(func, shape):
 
 def autograd_ops(func):
   def wrapper(*args, **kwargs):
-    from core.tensor import Tensor
+    from mvnet.tensor import Tensor
     tss = [a for a in args if isinstance(a, Tensor)]
     arr, *grad_fns = func(*[ts.array for ts in tss], *args[len(tss):], **kwargs)
     grad_fns = [unbroadcast(grad_fn, ts.shape) for ts, grad_fn in zip(tss, grad_fns)]
@@ -35,39 +36,39 @@ def autograd_ops(func):
 
 @autograd_ops
 def add(arr1, arr2):
-  grad_fn = lambda g: g
+  def grad_fn(g): return g
   return arr1 + arr2, grad_fn, grad_fn
 
 @autograd_ops
 def sub(arr1, arr2):
-  grad_fn1 = lambda g: g
-  grad_fn2 = lambda g: -g
+  def grad_fn1(g): return g
+  def grad_fn2(g): return -g
   return arr1 - arr2, grad_fn1, grad_fn2
 
 @autograd_ops
 def mul(arr1, arr2):
-  grad_fn1 = lambda g: arr2 * g
-  grad_fn2 = lambda g: arr1 * g
+  def grad_fn1(g): return arr2 * g
+  def grad_fn2(g): return arr1 * g
   return arr1 * arr2, grad_fn1, grad_fn2
 
 @autograd_ops
 def div(arr1, arr2):
   result = arr1 / arr2
-  grad_fn1 = lambda g: g / arr2
-  grad_fn2 = lambda g: -g * result / arr2
+  def grad_fn1(g): return g / arr2
+  def grad_fn2(g): return -g * result / arr2
   return result, grad_fn1, grad_fn2
 
 @autograd_ops
 def pow(arr1, arr2):
   result = arr1 ** arr2
-  grad_fn1 = lambda g: g * (arr2 * arr1**(arr2 - 1.0))
-  grad_fn2 = lambda g: g * (result * arr1.log())
+  def grad_fn1(g): return g * (arr2 * arr1**(arr2 - 1.0))
+  def grad_fn2(g): return g * (result * arr1.log())
   return result, grad_fn1, grad_fn2
 
 @autograd_ops
 def matmul(arr1, arr2):
-  grad_fn1 = lambda g: g @ arr2.T
-  grad_fn2 = lambda g: arr1.T @ g
+  def grad_fn1(g): return g @ arr2.T
+  def grad_fn2(g): return arr1.T @ g
   return arr1 @ arr2, grad_fn1, grad_fn2
 
 @autograd_ops
@@ -98,29 +99,29 @@ def sum(arr, axis=None, keepdims=False):
 @autograd_ops
 def max(arr, axis=None, keepdims=False):
   result = arr.max(axis=axis, keepdims=keepdims)
-  grad_fn = lambda g: g * (result == arr)
+  def grad_fn(g): return g * (result == arr)
   return result, grad_fn
 
 @autograd_ops
 def min(arr, axis, keepdims):
   result = arr.min(axis=axis, keepdims=keepdims)
-  grad_fn = lambda g: g * (result == arr)
+  def grad_fn(g): return g * (result == arr)
   return result, grad_fn
 
 @autograd_ops
 def neg(arr):
-  grad_fn = lambda g: -g
+  def grad_fn(g): return -g
   return -arr, grad_fn
 
 @autograd_ops
 def exp(arr):
   result = arr.exp()
-  grad_fn = lambda g: g * result
+  def grad_fn(g): return g * result
   return result, grad_fn
 
 @autograd_ops
 def log(arr):
-  grad_fn = lambda g: g / arr
+  def grad_fn(g): return g / arr
   return arr.log(), grad_fn
 
 """
@@ -133,14 +134,14 @@ def relu(arr):
 @autograd_ops
 def relu(arr):
   result = arr.relu()
-  grad_fn = lambda g: g.drelu(arr)
+  def grad_fn(g): return g.drelu(arr)
   return result, grad_fn
 
 @autograd_ops
 def expand(arr, shape):
   # TODO: test it
   expanded_axes = [i for i, (s1, s2) in enumerate(zip(arr.shape, shape)) if s1 == 1 and s2 > 1]
-  grad_fn = lambda g: g.squeeze(expanded_axes)
+  def grad_fn(g): return g.squeeze(expanded_axes)
   return arr.expand(shape), grad_fn
 
 @autograd_ops
@@ -150,7 +151,7 @@ def squeeze(arr, axis):
 
 @autograd_ops
 def reshape(arr, shape):
-  grad_fn = lambda g: g.reshape(arr.shape)
+  def grad_fn(g): return g.reshape(arr.shape)
   return arr.reshape(shape), grad_fn
 
 @autograd_ops
@@ -159,7 +160,7 @@ def permute(arr, axes=None):
     axes = range(arr.ndim)[::-1]
   axes = list(axes)
   result = arr.permute(axes)
-  grad_fn = lambda g: g.permute(argsort(axes))
+  def grad_fn(g): return g.permute(argsort(axes))
   return result, grad_fn
 
 @autograd_ops

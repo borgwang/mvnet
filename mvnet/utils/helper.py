@@ -3,6 +3,7 @@ import string
 import time
 from collections import defaultdict
 
+
 def timer(func):
   def wrapper(*args, **kwargs):
     ts = time.monotonic()
@@ -34,15 +35,20 @@ varnamegetter = VarNameGetter()
 class KernelStat:
   def __init__(self):
     self.reset()
+
   def reset(self):
-    self._counter = defaultdict(lambda : defaultdict(int))
+    self._counter = defaultdict(lambda: defaultdict(int))
+
   def log(self, operator):
     kerneltype = type(operator)
     self._counter[kerneltype][operator.name] += 1
+
   def get(self, kernel_type):
     return self._counter[kernel_type]
+
   def total(self):
     return sum(sum(v.values()) for k, v in self._counter.items())
+
   @property
   def info(self):
     info = {}

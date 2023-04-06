@@ -1,6 +1,7 @@
 from collections import defaultdict
 
-from env import LAZY
+from mvnet.env import LAZY
+
 
 class Optimizer:
   def __init__(self, params, lr, weight_decay):

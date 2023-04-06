@@ -1,14 +1,11 @@
-import copy
 import os
 from collections import defaultdict
 
 import networkx as nx
-import numpy as np
-from types import SimpleNamespace
 
-from core.backend.base import ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
-from env import *
-from utils.helper import varnamegetter
+from mvnet.backend.base import ElemwiseOps, ProcessingOps, ReduceOps, ViewOps
+from mvnet.utils.helper import varnamegetter
+
 
 class GraphOptimizer:
   def __init__(self, root):

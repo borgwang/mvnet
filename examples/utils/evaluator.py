@@ -1,5 +1,6 @@
 import numpy as np
 
+
 class Evaluator:
   @classmethod
   def evaluate(cls, predictions, targets):

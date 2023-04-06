@@ -1,7 +1,8 @@
 import numpy as np
 
-from core.backend.base import Array
-from core.dtype import float32
+from mvnet.backend.base import Array
+from mvnet.dtype import float32
+
 
 class NPArray(Array):
   """Wrap numpy ndarray"""

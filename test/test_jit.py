@@ -2,10 +2,10 @@ import runtime_path  # isort:skip
 
 import numpy as np
 
-from env import *
-from core.tensor import Tensor
-from utils.helper import kernelstat
-from core.backend.base import ElemwiseOps, ReduceOps, ProcessingOps, ViewOps, CreationOps
+from mvnet.backend.base import CreationOps, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps
+from mvnet.env import *
+from mvnet.tensor import Tensor
+from mvnet.utils.helper import kernelstat
 
 np.random.seed(0)
 
@@ -185,7 +185,7 @@ def test_graph_optimizer():
 
 def test_minimal():
   if not LAZY: return
-  from utils.helper import kernelstat
+  from mvnet.utils.helper import kernelstat
   np.random.seed(0)
   n_epoch = 50
   lr = 0.0001

@@ -1,13 +1,14 @@
 import numpy as np
 
-from core.tensor import Tensor
-from env import BACKEND
-from core.backend.numpy import NPArray as CPUArray
+from mvnet.backend.numpy import NPArray as CPUArray
+from mvnet.env import BACKEND
+from mvnet.tensor import Tensor
+
 GPUArray = type(None)
 if BACKEND == "opencl":
-  from core.backend.opencl import CLArray as GPUArray
+  from mvnet.backend.opencl import CLArray as GPUArray
 elif BACKEND == "cuda":
-  from core.backend.cuda import CuArray as GPUArray
+  from mvnet.backend.cuda import CuArray as GPUArray
 
 def get_fans(shape):
   fan_in = shape[0] if len(shape) == 2 else np.prod(shape[1:])

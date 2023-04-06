@@ -13,5 +13,4 @@ OPT_ELEMWISE_PROCESSING_FUSION = int(os.getenv("OPT_ELEMWISE_PROCESSING_FUSION",
 assert BACKEND in ("numpy", "opencl", "cuda"), f"backend {BACKEND} not supported!"
 
 if LAZY:
-  assert BACKEND in ("opencl",), f"currently lazy mode only support opencl backend!"
-
+  assert BACKEND in ("opencl",), "currently lazy mode only support opencl backend!"

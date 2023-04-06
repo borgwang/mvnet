@@ -1,15 +1,15 @@
-import core.autograd.ops as ops
-from env import BACKEND
-from core.dtype import float32
+import mvnet.autograd.ops as ops
+from mvnet.backend.numpy import NPArray as CPUArray
+from mvnet.dtype import float32
+from mvnet.env import BACKEND
 
-from core.backend.numpy import NPArray as CPUArray
-GPUArray = type(None)
 if BACKEND == "opencl":
-  from core.backend.opencl import CLArray as GPUArray
+  from mvnet.backend.opencl import CLArray as GPUArray
 elif BACKEND == "cuda":
-  from core.backend.cuda import CuArray as GPUArray
+  from mvnet.backend.cuda import CuArray as GPUArray  # type: ignore
 
 class Tensor:
+  # pylint: disable=exec-used
   def __init__(self, array, requires_grad=False, dependency=(), dtype=float32, name=None):
     self._gpu = isinstance(array, GPUArray)
     self.array = array if isinstance(array, (CPUArray, GPUArray)) else CPUArray(array, dtype=dtype)
@@ -33,7 +33,7 @@ class Tensor:
     return getattr(self, device)()
 
   def gpu(self):
-    assert GPUArray != type(None), f"backend {BACKEND} not support gpu device"
+    assert "GPUArray" in globals(), f"backend {BACKEND} not support gpu device"
     return Tensor(GPUArray(self.array.numpy()), requires_grad=self.requires_grad, dtype=self.dtype)
 
   def cpu(self):

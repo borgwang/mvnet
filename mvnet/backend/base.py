@@ -1,8 +1,8 @@
-from core.dtype import float32
-
 from enum import Enum
 
-ElemwiseOps = Enum("ElemwiseOps", ["NEG", "EXP", "LOG", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT" , "NOOP", "RELU", "DRELU"])
+from mvnet.dtype import float32
+
+ElemwiseOps = Enum("ElemwiseOps", ["NEG", "EXP", "LOG", "ADD", "SUB", "DIV", "MUL", "POW", "EQ", "GE", "GT", "NOOP", "RELU", "DRELU"])
 ReduceOps = Enum("ReduceOps", ["SUM", "MAX"])
 ProcessingOps = Enum("ProcessingOps", ["MATMUL", "CONV"])
 ViewOps = Enum("ViewOps", ["SLICE", "RESHAPE", "PERMUTE", "EXPAND"])
@@ -16,7 +16,7 @@ class Array:
     exec(f"def __r{op_}__(self, other): return self.asarray(other).{op}(self)")
   for op in ("eq", "ge", "gt"):
     exec(f"def __{op}__(self, other): return self.{op}(self.asarray(other))")
-  exec(f"def __neg__(self): return self.neg()")
+  exec("def __neg__(self): return self.neg()")
 
   def __init__(self, shape=None, dtype=float32, op_info=None, is_lazy=False):
     self.shape, self.dtype = shape, dtype

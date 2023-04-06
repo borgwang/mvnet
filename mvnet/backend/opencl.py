@@ -1,17 +1,18 @@
 import copy
-from types import SimpleNamespace
 from functools import lru_cache
+from types import SimpleNamespace
 
 import numpy as np
 import pyopencl
 import pyopencl.clrandom
 
-from env import *
-from core.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps, CreationOps
-from core.dtype import int32, float32
-from core.jit.graph import GraphOptimizer
-from utils.math import prod
-from utils.helper import kernelstat
+from mvnet.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps
+from mvnet.dtype import float32, int32
+from mvnet.env import (DEBUG, GRAPH, LAZY, OPT_CONSTANT_FOLDING, OPT_ELEMWISE_FUSION, OPT_ELEMWISE_PROCESSING_FUSION,
+                       OPT_VIEWOP_PRUNING)
+from mvnet.jit.graph import GraphOptimizer
+from mvnet.utils.helper import kernelstat
+from mvnet.utils.math import prod
 
 ELEMWISE_MAPPING = {
     ElemwiseOps.NOOP: "A", ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)", ElemwiseOps.LOG: "log(A)",
@@ -92,7 +93,7 @@ def elemwise_op(op_info):
   args += [int32(x.offset) for x in inp.values()]
   args += [x.buffer for x in inp.values()]
   args += [float32(x.constant_value) for x in const_inp.values()]
-  e = op((prod(shape),), None, *args, ret.buffer)
+  op((prod(shape),), None, *args, ret.buffer)
   kernelstat.log(op_info.operator)
   return ret
 
@@ -158,7 +159,7 @@ def matmul_op(op_info):
     args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
   args += [x.buffer for x in extra_inp.values()]
   args += [float32(x.constant_value) for x in extra_const_inp.values()]
-  e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
+  op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
   kernelstat.log(op_info.operator)
   return ret
 
@@ -222,7 +223,7 @@ def reduce_op(op_info):
   """)
   local_mem = cl.alloc_local(x.dtype().itemsize * grp_size)
   local_size = tuple(grp_size if i == axis else 1 for i in range(ndim))
-  e = op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
+  op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
   if DEBUG: print(f"[DEBUG] x_shp: {x_shp} ret_shape: {ret_shape} grp_size: {grp_size} n_grps: {n_grps} size: {size} global_size: {global_size} local_size: {local_size} axis={axis} ndim={ndim} offset={offset}")
   kernelstat.log(op_info.operator)
   if n_grps > 1:
@@ -329,7 +330,7 @@ class CLArray(Array):
     exec(f"@register_elemwise_op\ndef {op}(self, out=None): return ElemwiseOps.{op.upper()}")
   for op in ("add", "sub", "div", "mul", "pow", "eq", "ge", "gt", "contiguous", "drelu"):
     exec(f"@register_elemwise_op\ndef {op}(self, other, out=None): return ElemwiseOps.{op.upper()}")
-  exec(f"@register_elemwise_op\ndef contiguous(self): return ElemwiseOps.NOOP")
+  exec("@register_elemwise_op\ndef contiguous(self): return ElemwiseOps.NOOP")
 
   # ##### Reduce Ops #####
   for op in ("sum", "max"):
@@ -339,8 +340,12 @@ class CLArray(Array):
   def matmul(self, other, out=None):
     a, b = self, other
     squeezes = []
-    if a.ndim == 1: a = a.reshape((1, *a.shape)); squeezes.append(0)
-    if b.ndim == 1: b = b.reshape((*b.shape, 1)); squeezes.append(-1)
+    if a.ndim == 1:
+      a = a.reshape((1, *a.shape))
+      squeezes.append(0)
+    if b.ndim == 1:
+      b = b.reshape((*b.shape, 1))
+      squeezes.append(-1)
     ret_shape = tuple((*a.shape[:-1], b.shape[-1]))
 
     if a.ndim > 3: a = a.reshape((prod(a.shape[:-2]), *a.shape[2:]))
@@ -405,7 +410,8 @@ class CLArray(Array):
 
   def __getitem__(self, key):
     # TODO: handle step
-    is_basic = lambda k: isinstance(k, (slice, int))
+    def is_basic(k):
+      return isinstance(k, (slice, int))
     assert is_basic(key) or all(is_basic(k) for k in key), f"Advantage indexing not supported yet. {key}"
     key = (key,) if is_basic(key) else key
     inst = copy.copy(self)
@@ -431,7 +437,6 @@ class CLArray(Array):
     return inst
 
   def __setitem__(self, key, value):
-    item = self[key]
     # unary_op("noop", value, ret=item)
     # TODO: implement assign ops
     assert False
@@ -469,7 +474,7 @@ class CLArray(Array):
     def recursive_eager(node):
       for dep_node in node.op_info.operands.values():
         if dep_node.is_lazy:
-            recursive_eager(dep_node)
+          recursive_eager(dep_node)
       if node.is_lazy:
         eager = invoke(node.op_info)
         node.update_from_eager(eager)
@@ -513,7 +518,7 @@ class CLArray(Array):
     return self
 
   def _calculate_contiguity(self):
-    # https://github.com/numpy/numpy/blob/4c60b3263ac50e5e72f6a909e156314fc3c9cba0/numpy/core/src/multiarray/flagsobject.c#L115
+    # https://github.com/numpy/numpy/blob/4c60b3263ac50e5e72f6a909e156314fc3c9cba0/numpy/mvnet/src/multiarray/flagsobject.c#L115
     c_contiguous = f_contiguous = True
     if not self.ndim:
       return c_contiguous, f_contiguous

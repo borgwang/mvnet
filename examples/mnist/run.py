@@ -8,17 +8,17 @@ import sys
 import time
 
 import numpy as np
-
-from core.nn.net import SequentialNet
-from core.nn.layers import Dense, ReLU
-from core.nn.loss import SoftmaxCrossEntropyLoss
-from core.nn.optimizer import Adam, SGD
-from core.tensor import Tensor
 from utils.data_iterator import BatchIterator
 from utils.downloader import download_url
 from utils.evaluator import AccEvaluator
-from utils.helper import kernelstat
-from env import LAZY, BACKEND
+
+from mvnet.env import BACKEND, LAZY
+from mvnet.nn.layers import Dense, ReLU
+from mvnet.nn.loss import SoftmaxCrossEntropyLoss
+from mvnet.nn.net import SequentialNet
+from mvnet.nn.optimizer import SGD, Adam
+from mvnet.tensor import Tensor
+from mvnet.utils.helper import kernelstat
 
 
 def get_one_hot(targets, nb_classes):
@@ -69,7 +69,7 @@ def main(args):
 
   iterator = BatchIterator(batch_size=args.batch_size)
   evaluator = AccEvaluator()
-  from core.backend.opencl import cl
+  from mvnet.backend.opencl import cl
   for epoch in range(args.num_ep):
     t_start = time.monotonic()
     for batch in iterator(train_x, train_y):

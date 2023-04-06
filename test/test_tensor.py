@@ -1,8 +1,9 @@
 import runtime_path  # isort:skip
 
-import pytest
 import numpy as np
-from core.tensor import Tensor
+import pytest
+
+from mvnet.tensor import Tensor
 
 np.random.seed(0)
 

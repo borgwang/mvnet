@@ -1,5 +1,5 @@
-from core.nn.initializer import XavierUniformInit
-from core.nn.initializer import ZerosInit
+from mvnet.nn.initializer import XavierUniformInit, ZerosInit
+
 
 class Layer:
   def __init__(self):

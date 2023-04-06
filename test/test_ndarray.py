@@ -1,8 +1,9 @@
 import runtime_path  # isort:skip
 
 import numpy as np
-from core.backend.opencl import CLArray
-from env import DEBUG
+
+from mvnet.backend.opencl import CLArray
+from mvnet.env import DEBUG
 
 np.random.seed(0)
 
