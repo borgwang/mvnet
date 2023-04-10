@@ -24,7 +24,7 @@ class Dense(Layer):
 
     self.is_init = False
     if num_in is not None:
-        self._init_parameters(num_in)
+      self._init_parameters(num_in)
 
   def forward(self, inputs):
     if not self.is_init:
@@ -42,5 +42,5 @@ class Activation(Layer):
     raise NotImplementedError
 
 class ReLU(Activation):
-  def forward(self, x):
-    return x.relu()
+  def forward(self, inputs):
+    return inputs.relu()

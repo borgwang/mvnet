@@ -1,15 +1,12 @@
-import mvnet.autograd.ops as ops
+from mvnet.autograd.ops import Ops as ops
+#from mvnet.backend.cuda import CuArray
 from mvnet.backend.numpy import NPArray as CPUArray
+from mvnet.backend.opencl import CLArray as GPUArray
 from mvnet.dtype import float32
 from mvnet.env import BACKEND
 
-if BACKEND == "opencl":
-  from mvnet.backend.opencl import CLArray as GPUArray
-elif BACKEND == "cuda":
-  from mvnet.backend.cuda import CuArray as GPUArray  # type: ignore
 
 class Tensor:
-  # pylint: disable=exec-used
   def __init__(self, array, requires_grad=False, dependency=(), dtype=float32, name=None):
     self._gpu = isinstance(array, GPUArray)
     self.array = array if isinstance(array, (CPUArray, GPUArray)) else CPUArray(array, dtype=dtype)
@@ -55,7 +52,7 @@ class Tensor:
     return self.shape[0]
 
   def __repr__(self):
-    return (f"<Tensor name={self.name}  shape={self.shape} requires_grad={self.requires_grad} gpu={self._gpu}>")
+    return f"<Tensor name={self.name}  shape={self.shape} requires_grad={self.requires_grad} gpu={self._gpu}>"
 
   for op in ("add", "sub", "mul", "div", "pow", "matmul"):
     op_ = "truediv" if op == "div" else op

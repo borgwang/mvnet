@@ -1,4 +1,7 @@
 class Net:
+  def __init__(self) -> None:
+    self.layers = None
+
   def forward(self, x):
     raise NotImplementedError
 

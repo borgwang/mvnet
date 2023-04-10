@@ -51,7 +51,12 @@ OPT_CONSTANT_FOLDING=1 OPT_ELEMWISE_FUSION=1 LAZY=1 BACKEND=opencl python3 examp
 DEBUG=0 GRAPH=0 LAZY=1 BACKEND=opencl pytest -s
 ```
 
+### Install
+
+```
+pip3 install -e .
+```
+
 ### License
 
 MIT
-

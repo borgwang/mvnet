@@ -30,143 +30,144 @@ def autograd_ops(func):
       if ts.requires_grad and grad_fn:
         ts.degree += 1
         grad_fn.__name__ = f"grad_fn_{i+1} for {func.__name__}"
-        dependency.append(dict(tensor=ts, grad_fn=grad_fn))
+        dependency.append({"tensor": ts, "grad_fn": grad_fn})
     return Tensor(arr, requires_grad, dependency, name=genname(func.__name__, *tss))
   return wrapper
 
-@autograd_ops
-def add(arr1, arr2):
-  def grad_fn(g): return g
-  return arr1 + arr2, grad_fn, grad_fn
+class Ops:
 
-@autograd_ops
-def sub(arr1, arr2):
-  def grad_fn1(g): return g
-  def grad_fn2(g): return -g
-  return arr1 - arr2, grad_fn1, grad_fn2
+  @staticmethod
+  @autograd_ops
+  def add(arr1, arr2):
+    return arr1 + arr2, lambda g: g, lambda g: g
 
-@autograd_ops
-def mul(arr1, arr2):
-  def grad_fn1(g): return arr2 * g
-  def grad_fn2(g): return arr1 * g
-  return arr1 * arr2, grad_fn1, grad_fn2
+  @staticmethod
+  @autograd_ops
+  def sub(arr1, arr2):
+    return arr1 - arr2, lambda g: g, lambda g: -g
 
-@autograd_ops
-def div(arr1, arr2):
-  result = arr1 / arr2
-  def grad_fn1(g): return g / arr2
-  def grad_fn2(g): return -g * result / arr2
-  return result, grad_fn1, grad_fn2
+  @staticmethod
+  @autograd_ops
+  def mul(arr1, arr2):
+    return arr1 * arr2, lambda g: arr2 * g, lambda g: arr1 * g
 
-@autograd_ops
-def pow(arr1, arr2):
-  result = arr1 ** arr2
-  def grad_fn1(g): return g * (arr2 * arr1**(arr2 - 1.0))
-  def grad_fn2(g): return g * (result * arr1.log())
-  return result, grad_fn1, grad_fn2
+  @staticmethod
+  @autograd_ops
+  def div(arr1, arr2):
+    result = arr1 / arr2
+    return result, lambda g: g / arr2, lambda g: -g * result / arr2
 
-@autograd_ops
-def matmul(arr1, arr2):
-  def grad_fn1(g): return g @ arr2.T
-  def grad_fn2(g): return arr1.T @ g
-  return arr1 @ arr2, grad_fn1, grad_fn2
+  @staticmethod
+  @autograd_ops
+  def pow(arr1, arr2):
+    result = arr1 ** arr2
+    return result, lambda g: g * (arr2 * arr1**(arr2 - 1.0)), lambda g: g * (result * arr1.log())
 
-@autograd_ops
-def gt(arr1, arr2):
-  return arr1 > arr2, None, None
+  @staticmethod
+  @autograd_ops
+  def matmul(arr1, arr2):
+    return arr1 @ arr2, lambda g: g @ arr2.T, lambda g: arr1.T @ g
 
-@autograd_ops
-def eq(arr1, arr2):
-  return arr1 == arr2, None, None
+  @staticmethod
+  @autograd_ops
+  def gt(arr1, arr2):
+    return arr1 > arr2, None, None
 
-@autograd_ops
-def ge(arr1, arr2):
-  return arr1 >= arr2, None, None
+  @staticmethod
+  @autograd_ops
+  def eq(arr1, arr2):
+    return arr1 == arr2, None, None
 
-@autograd_ops
-def sum(arr, axis=None, keepdims=False):
-  result = arr.sum(axis=axis, keepdims=keepdims)
-  def grad_fn(g):
-    shape = arr.shape
-    if axis is None:
-      assert not keepdims, "keepdims must be False when axis is None"
-      return g.reshape([1] * arr.ndim).expand(shape)
-    if not keepdims:
-      g = g.reshape((*shape[:axis], 1, *shape[axis+1:]))
-    return g.expand(shape)
-  return result, grad_fn
+  @staticmethod
+  @autograd_ops
+  def ge(arr1, arr2):
+    return arr1 >= arr2, None, None
 
-@autograd_ops
-def max(arr, axis=None, keepdims=False):
-  result = arr.max(axis=axis, keepdims=keepdims)
-  def grad_fn(g): return g * (result == arr)
-  return result, grad_fn
+  @staticmethod
+  @autograd_ops
+  def sum(arr, axis=None, keepdims=False):
+    result = arr.sum(axis=axis, keepdims=keepdims)
+    def grad_fn(g):
+      shape = arr.shape
+      if axis is None:
+        assert not keepdims, "keepdims must be False when axis is None"
+        return g.reshape([1] * arr.ndim).expand(shape)
+      if not keepdims:
+        g = g.reshape((*shape[:axis], 1, *shape[axis+1:]))
+      return g.expand(shape)
+    return result, grad_fn
 
-@autograd_ops
-def min(arr, axis, keepdims):
-  result = arr.min(axis=axis, keepdims=keepdims)
-  def grad_fn(g): return g * (result == arr)
-  return result, grad_fn
+  @staticmethod
+  @autograd_ops
+  def max(arr, axis=None, keepdims=False):
+    result = arr.max(axis=axis, keepdims=keepdims)
+    return result, lambda g: g * (result == arr)
 
-@autograd_ops
-def neg(arr):
-  def grad_fn(g): return -g
-  return -arr, grad_fn
+  @staticmethod
+  @autograd_ops
+  def min(arr, axis, keepdims):
+    result = arr.min(axis=axis, keepdims=keepdims)
+    return result, lambda g: g * (result == arr)
 
-@autograd_ops
-def exp(arr):
-  result = arr.exp()
-  def grad_fn(g): return g * result
-  return result, grad_fn
+  @staticmethod
+  @autograd_ops
+  def neg(arr):
+    return -arr, lambda g: -g
 
-@autograd_ops
-def log(arr):
-  def grad_fn(g): return g / arr
-  return arr.log(), grad_fn
+  @staticmethod
+  @autograd_ops
+  def exp(arr):
+    result = arr.exp()
+    return result, lambda  g: g * result
 
-"""
-@autograd_ops
-def relu(arr):
-  mask = arr > 0
-  grad_fn = lambda g: mask * g
-  return mask * arr, grad_fn
-"""
-@autograd_ops
-def relu(arr):
-  result = arr.relu()
-  def grad_fn(g): return g.drelu(arr)
-  return result, grad_fn
+  @staticmethod
+  @autograd_ops
+  def log(arr):
+    return arr.log(), lambda g: g / arr
 
-@autograd_ops
-def expand(arr, shape):
-  # TODO: test it
-  expanded_axes = [i for i, (s1, s2) in enumerate(zip(arr.shape, shape)) if s1 == 1 and s2 > 1]
-  def grad_fn(g): return g.squeeze(expanded_axes)
-  return arr.expand(shape), grad_fn
+  #@staticmethod
+  #@autograd_ops
+  #def relu(arr):
+  #  mask = arr > 0
+  #  return mask * arr, lambda g: mask * g
 
-@autograd_ops
-def squeeze(arr, axis):
-  # TODO: implement it
-  pass
+  @staticmethod
+  @autograd_ops
+  def relu(arr):
+    return arr.relu(), lambda g: g.drelu(arr)
 
-@autograd_ops
-def reshape(arr, shape):
-  def grad_fn(g): return g.reshape(arr.shape)
-  return arr.reshape(shape), grad_fn
+  @staticmethod
+  @autograd_ops
+  def expand(arr, shape):
+    # TODO: test it
+    expanded_axes = [i for i, (s1, s2) in enumerate(zip(arr.shape, shape)) if s1 == 1 and s2 > 1]
+    return arr.expand(shape), lambda g: g.squeeze(expanded_axes)
 
-@autograd_ops
-def permute(arr, axes=None):
-  if axes is None:
-    axes = range(arr.ndim)[::-1]
-  axes = list(axes)
-  result = arr.permute(axes)
-  def grad_fn(g): return g.permute(argsort(axes))
-  return result, grad_fn
+  @staticmethod
+  @autograd_ops
+  def squeeze(arr, axis):
+    # TODO: implement it
+    pass
 
-@autograd_ops
-def getitem(arr, key):
-  def grad_fn(g):
-    ret = g.__class__.zeros(arr.shape)
-    ret[key] = g  # TODO
-    return ret
-  return arr[key], grad_fn
+  @staticmethod
+  @autograd_ops
+  def reshape(arr, shape):
+    return arr.reshape(shape), lambda g: g.reshape(arr.shape)
+
+  @staticmethod
+  @autograd_ops
+  def permute(arr, axes=None):
+    if axes is None:
+      axes = range(arr.ndim)[::-1]
+    axes = list(axes)
+    result = arr.permute(axes)
+    return result, lambda g: g.permute(argsort(axes))
+
+  @staticmethod
+  @autograd_ops
+  def getitem(arr, key):
+    def grad_fn(g):
+      ret = g.__class__.zeros(arr.shape)
+      ret[key] = g  # TODO
+      return ret
+    return arr[key], grad_fn

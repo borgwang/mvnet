@@ -10,10 +10,10 @@ CreationOps = Enum("CreationOps", ["EMPTY", "FULL", "UNIFORM", "NORMAL"])
 
 class Array:
   for op in ("add", "sub", "mul", "div", "pow", "matmul"):
-    op_ = "truediv" if op == "div" else op
-    exec(f"def __{op_}__(self, other): return self.{op}(self.asarray(other))")
-    exec(f"def __i{op_}__(self, other): return self.{op}(self.asarray(other), out=self)")
-    exec(f"def __r{op_}__(self, other): return self.asarray(other).{op}(self)")
+    magic = "truediv" if op == "div" else op
+    exec(f"def __{magic}__(self, other): return self.{op}(self.asarray(other))")
+    exec(f"def __i{magic}__(self, other): return self.{op}(self.asarray(other), out=self)")
+    exec(f"def __r{magic}__(self, other): return self.asarray(other).{op}(self)")
   for op in ("eq", "ge", "gt"):
     exec(f"def __{op}__(self, other): return self.{op}(self.asarray(other))")
   exec("def __neg__(self): return self.neg()")
@@ -23,6 +23,7 @@ class Array:
     self.op_info = op_info
     self.is_lazy = is_lazy
     self.constant_value = None
+    self.strides = None
 
   def __repr__(self):
     clsname = self.__class__.__name__
@@ -50,12 +51,12 @@ class Array:
   def broadcast(*arrs):
     # https://numpy.org/doc/stable/user/basics.broadcasting.html
     reverted_shapes = [arr.shape[::-1] for arr in arrs]
-    min_ndim = min([arr.ndim for arr in arrs])
+    min_ndim = min(arr.ndim for arr in arrs)
     for i in range(min_ndim):
-      unique = set([shape[i] for shape in reverted_shapes])
+      unique = {shape[i] for shape in reverted_shapes}
       if len(unique) > 2 or (len(unique) == 2 and 1 not in unique):
         raise ValueError(f"Error broadcasting for {arrs}")
-    ndim = max([arr.ndim for arr in arrs])
+    ndim = max(arr.ndim for arr in arrs)
     arrs = [a.reshape([1] * (ndim - a.ndim) + list(a.shape)) if a.ndim != ndim else a for a in arrs]
     broadcast_shape = tuple([max(*s) for s in zip(*[a.shape for a in arrs])])
     arrs = [a.expand(broadcast_shape) if a.shape != broadcast_shape else a for a in arrs]

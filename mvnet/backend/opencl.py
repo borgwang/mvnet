@@ -39,11 +39,11 @@ class CLContext:
     alloc = pyopencl.tools.ImmediateAllocator(self.queue)
     self.mem_pool = pyopencl.tools.MemoryPool(alloc)
 
-  @lru_cache(maxsize=None)
+  @lru_cache(maxsize=None)  # pylint: disable=method-cache-max-size-none
   def build(self, name, program):
     self.info["build_cnt"] += 1
     if DEBUG: print(f"[DEBUG] program {name}: \n {program}")
-    kernel = pyopencl.Program(self.ctx, program).build().__getattr__(name)
+    kernel = getattr(pyopencl.Program(self.ctx, program).build(), name)
     return lambda *args: kernel(self.queue, *args)
 
   def alloc_local(self, size):
@@ -250,7 +250,7 @@ def view_op(op_info):
 
 def register_elemwise_op(func):
   def wrapper(*inputs, **kwargs):
-    if len(inputs) > 1 and len(set([i.shape for i in inputs])) > 1:
+    if len(inputs) > 1 and len({i.shape for i in inputs}) > 1:
       inputs = Array.broadcast(*inputs)
     op = func(*inputs)
     code = ELEMWISE_MAPPING[op]
@@ -265,7 +265,7 @@ def register_reduce_op(func):
   def wrapper(x, axis=None, keepdims=False):
     op = func(x, axis=axis, keepdims=keepdims)
     x = x.contiguous() if not x.c_contiguous else x
-    op_info = SimpleNamespace(operator=op, operands={"A": x}, args=dict(axis=axis, keepdims=keepdims))
+    op_info = SimpleNamespace(operator=op, operands={"A": x}, args={"axis": axis, "keepdims": keepdims})
     if not LAZY: return invoke(op_info)
     ret_shape = () if axis is None else [d for i, d in enumerate(x.shape) if i != axis]
     if keepdims: ret_shape.insert(axis, 1)
@@ -276,14 +276,13 @@ def invoke(op_info):
   optype = type(op_info.operator)
   if optype is ElemwiseOps:
     return elemwise_op(op_info)
-  elif optype is ReduceOps:
+  if optype is ReduceOps:
     return reduce_op(op_info)
-  elif optype is ProcessingOps:
+  if optype is ProcessingOps:
     return matmul_op(op_info)
-  elif optype is ViewOps:
+  if optype is ViewOps:
     return next(iter(op_info.operands.values()))
-  else:
-    raise ValueError(f"Invoke invalid operator {op_info.operator}")
+  raise ValueError(f"Invoke invalid operator {op_info.operator}")
 
 class CLArray(Array):
   def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
@@ -378,7 +377,7 @@ class CLArray(Array):
     shape = tuple(shape)
     assert prod(shape) == prod(self.shape), f"Can not reshape {self.shape} to {shape}"
     if not self.c_contiguous and not self.f_contiguous:
-      self = self.contiguous()
+      self = self.contiguous()  # pylint: disable=self-cls-assignment  # FIXME
     op_info = SimpleNamespace(operator=ViewOps.RESHAPE, operands={"A": self}, args={"shape": shape})
     arr = view_op(op_info)
     if LAZY: arr.op_info = op_info

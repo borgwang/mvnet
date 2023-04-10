@@ -1,4 +1,5 @@
 import os
+from ast import literal_eval
 from collections import defaultdict
 
 import networkx as nx
@@ -43,17 +44,17 @@ class GraphOptimizer:
 
       is_const = False
       if any(dep_is_const):
-        if isinstance(node.op_info.operator, ViewOps):
+        if type(node.op_info.operator) is ViewOps:
           dep_node = next(iter(node.op_info.operands.values()))
           node.to_constant(dep_node.constant_value)
           is_const = True
-        if isinstance(node.op_info.operator, ElemwiseOps):
+        if type(node.op_info.operator) is ElemwiseOps:
           if all(dep_is_const) and len(dep_is_const) > 1:  # NOTE: skip unary ops
-              expr = node.op_info.code
-              for name, dep_node in node.op_info.operands.items():
-                  expr = expr.replace(name, f"{dep_node.constant_value:.15f}f")
-              node.to_constant(eval(expr.replace("f", "")))
-              is_const = True
+            expr = node.op_info.code
+            for name, dep_node in node.op_info.operands.items():
+              expr = expr.replace(name, f"{dep_node.constant_value:.15f}f")
+            node.to_constant(literal_eval(expr.replace("f", "")))
+            is_const = True
       return is_const
 
     cache = {}
@@ -78,7 +79,7 @@ class GraphOptimizer:
 
     def update_outdegree(node):
       if visited[id(node)]: return
-      for name, dep_node in node.op_info.operands.items():
+      for _, dep_node in node.op_info.operands.items():
         outdegree[id(dep_node)] += 1
         update_outdegree(dep_node)
       visited[id(node)] = True
@@ -91,14 +92,14 @@ class GraphOptimizer:
 
   def _viewop_pruning(self, root):
     def viewop_pruning(node):
-      for name, dep_node in node.op_info.operands.items():
+      for _, dep_node in node.op_info.operands.items():
         if not visited[id(dep_node)]:
           viewop_pruning(dep_node)
         if type(node.op_info.operator) is ViewOps:
           node.op_info = dep_node.op_info
           node.constant_value = dep_node.constant_value
           if not dep_node.is_lazy and dep_node.constant_value is None:
-              node.buffer = dep_node.buffer
+            node.buffer = dep_node.buffer
       visited[id(node)] = True
     visited = defaultdict(bool)
     viewop_pruning(root)
@@ -110,10 +111,11 @@ class GraphOptimizer:
         if not visited[id(dep_node)]:
           elemwise_processing_fusion(dep_node)
         dep_types[type(dep_node.op_info.operator)].append((name, dep_node))
+      # pylint: disable=undefined-loop-variable  # FIXME
       if type(node.op_info.operator) is ElemwiseOps and \
               outdegree[id(dep_node)] == 1 and \
               len(dep_types[ProcessingOps]) == 1 and len(dep_types[ReduceOps]) == 0 and \
-              all([not v.is_lazy for k, v in dep_types[ElemwiseOps]]):
+              all(not v.is_lazy for k, v in dep_types[ElemwiseOps]):
         name, proc_dep = dep_types[ProcessingOps][0]
         extra_code = node.op_info.code.replace(name, "acc")
         extra_operands = {**dict(dep_types[ElemwiseOps]), **dict(dep_types[type(None)])}
@@ -123,7 +125,7 @@ class GraphOptimizer:
 
     def update_outdegree(node):
       if visited[id(node)]: return
-      for name, dep_node in node.op_info.operands.items():
+      for _, dep_node in node.op_info.operands.items():
         outdegree[id(dep_node)] += 1
         update_outdegree(dep_node)
       visited[id(node)] = True
@@ -140,7 +142,7 @@ class GraphOptimizer:
       if node is None: return G
       if id(node) in G.nodes: return G
       G.add_node(id(node))
-      label = (f"{node.shape}\n{node.strides}\n{id(node)}\nC:{int(node.c_contiguous)} F:{int(node.f_contiguous)}")
+      label = f"{node.shape}\n{node.strides}\n{id(node)}\nC:{int(node.c_contiguous)} F:{int(node.f_contiguous)}"
       if node.constant_value is not None:
         label += f"\nCONSTANT={node.constant_value}"
       if node.op_info.operator is not None:
@@ -165,7 +167,7 @@ class GraphOptimizer:
   def count(self, root):
     def count_node(node):
       cnt = 0
-      for name, dep_node in node.op_info.operands.items():
+      for _, dep_node in node.op_info.operands.items():
         if not visited[id(dep_node)]:
           cnt += count_node(dep_node)
         cnt += 1

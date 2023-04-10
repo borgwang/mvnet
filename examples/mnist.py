@@ -1,5 +1,3 @@
-import runtime_path  # isort:skip
-
 import argparse
 import gzip
 import os

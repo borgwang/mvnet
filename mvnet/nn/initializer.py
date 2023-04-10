@@ -31,10 +31,9 @@ class NormalInit(Initializer):
   def init(self, shape, dtype, device):
     if device == "cpu":
       return CPUArray.normal(loc=self._mean, scale=self._std, shape=shape, dtype=dtype)
-    elif device == "gpu":
+    if device == "gpu":
       return GPUArray.normal(loc=self._mean, scale=self._std, shape=shape, dtype=dtype)
-    else:
-      raise ValueError(f"Invalid device type {device}")
+    raise ValueError(f"Invalid device type {device}")
 
 class UniformInit(Initializer):
   def __init__(self, a=0.0, b=1.0):
@@ -44,10 +43,9 @@ class UniformInit(Initializer):
   def init(self, shape, dtype, device):
     if device == "cpu":
       return CPUArray.uniform(a=self._a, b=self._b, shape=shape, dtype=dtype)
-    elif device == "gpu":
+    if device == "gpu":
       return GPUArray.uniform(a=self._a, b=self._b, shape=shape, dtype=dtype)
-    else:
-      raise ValueError(f"Invalid device type {device}")
+    raise ValueError(f"Invalid device type {device}")
 
 class ConstantInit(Initializer):
   def __init__(self, val):
@@ -56,14 +54,13 @@ class ConstantInit(Initializer):
   def init(self, shape, dtype, device):
     if device == "cpu":
       return CPUArray.full(shape, self._val, dtype)
-    elif device == "gpu":
+    if device == "gpu":
       return GPUArray.full(shape, self._val, dtype)
-    else:
-      raise ValueError(f"Invalid device type {device}")
+    raise ValueError(f"Invalid device type {device}")
 
 class ZerosInit(ConstantInit):
   def __init__(self):
-    super(ZerosInit, self).__init__(0.0)
+    super().__init__(0.0)
 
 class XavierUniformInit(Initializer):
   def __init__(self, gain=1.0):
@@ -74,10 +71,9 @@ class XavierUniformInit(Initializer):
     a = self._gain * np.sqrt(6.0 / (fan_in + fan_out))
     if device == "cpu":
       return CPUArray.uniform(a=-a, b=a, shape=shape, dtype=dtype)
-    elif device == "gpu":
+    if device == "gpu":
       return GPUArray.uniform(a=-a, b=a, shape=shape, dtype=dtype)
-    else:
-      raise ValueError(f"Invalid device type {device}")
+    raise ValueError(f"Invalid device type {device}")
 
 class XavierNormalInit(Initializer):
   def __init__(self, gain=1.0):
@@ -88,7 +84,6 @@ class XavierNormalInit(Initializer):
     std = self._gain * np.sqrt(2.0 / (fan_in + fan_out))
     if device == "cpu":
       return CPUArray.normal(loc=0.0, scale=std, shape=shape, dtype=dtype)
-    elif device == "gpu":
+    if device == "gpu":
       return GPUArray.normal(loc=0.0, scale=std, shape=shape, dtype=dtype)
-    else:
-      raise ValueError(f"Invalid device type {device}")
+    raise ValueError(f"Invalid device type {device}")

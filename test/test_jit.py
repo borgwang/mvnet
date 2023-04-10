@@ -1,5 +1,3 @@
-import runtime_path  # isort:skip
-
 import numpy as np
 
 from mvnet.backend.base import CreationOps, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps
