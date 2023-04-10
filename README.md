@@ -26,24 +26,21 @@ mvnet is a small but fully functional deep learning framework built on top of [t
 ### Benchmark
 ```
 # profile forward
-GRAPH=1 LAZY=1 BACKEND=opencl python3 examples/mnist/run.py --batch_size 4096 --eval 1 --profile_forward 1
+GRAPH=1 LAZY=1 BACKEND=opencl python3 examples/mnist.py --batch_size 4096 --eval 1 --profile_forward 1
 ```
 
 ```
 # backend numpy: ~0.65s per epoch
-LAZY=0 BACKEND=numpy python3 examples/mnist/run.py --batch_size 4096 --eval 1
+LAZY=0 BACKEND=numpy python3 examples/mnist.py --batch_size 4096 --eval 1
 
 # opencl backend (eager): ~0.75s per epoch
-LAZY=0 BACKEND=opencl python3 examples/mnist/run.py --batch_size 4096 --eval 1
+LAZY=0 BACKEND=opencl python3 examples/mnist.py --batch_size 4096 --eval 1
 
 # opencl backend (lazy): ~0.78s per epoch
-LAZY=1 BACKEND=opencl python3 examples/mnist/run.py --batch_size 4096 --eval 1
-
-# opencl backend (lazy): ~0.78s per epoch
-LAZY=1 BACKEND=opencl python3 examples/mnist/run.py --batch_size 4096 --eval 1
+LAZY=1 BACKEND=opencl python3 examples/mnist.py --batch_size 4096 --eval 1
 
 # lazy with optimization: ~0.62s per epoch
-OPT_CONSTANT_FOLDING=1 OPT_ELEMWISE_FUSION=1 LAZY=1 BACKEND=opencl python3 examples/mnist/run.py --batch_size 4096 --eval 1
+OPT_CONSTANT_FOLDING=1 OPT_ELEMWISE_FUSION=1 LAZY=1 BACKEND=opencl python3 examples/mnist.py --batch_size 4096 --eval 1
 ```
 
 ### Test

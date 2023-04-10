@@ -1,14 +1,9 @@
 import numpy as np
 
 from mvnet.backend.numpy import NPArray as CPUArray
-from mvnet.env import BACKEND
+from mvnet.backend.opencl import CLArray as GPUArray
 from mvnet.tensor import Tensor
 
-GPUArray = type(None)
-if BACKEND == "opencl":
-  from mvnet.backend.opencl import CLArray as GPUArray
-elif BACKEND == "cuda":
-  from mvnet.backend.cuda import CuArray as GPUArray
 
 def get_fans(shape):
   fan_in = shape[0] if len(shape) == 2 else np.prod(shape[1:])
@@ -60,7 +55,7 @@ class ConstantInit(Initializer):
 
 class ZerosInit(ConstantInit):
   def __init__(self):
-    super().__init__(0.0)
+    super().__init__(np.float32(0.0))
 
 class XavierUniformInit(Initializer):
   def __init__(self, gain=1.0):

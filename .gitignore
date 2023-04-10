@@ -95,7 +95,6 @@ ENV/
 
 # Customize
 examples/mnist/data/*
-examples/nn_paint/data/*
-examples/binary_classification/data/*
 examples/mnist/compare_tf.py
+examples/test.py
 *.png

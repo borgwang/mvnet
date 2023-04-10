@@ -1,5 +1,4 @@
 import os
-from ast import literal_eval
 from collections import defaultdict
 
 import networkx as nx
@@ -53,7 +52,7 @@ class GraphOptimizer:
             expr = node.op_info.code
             for name, dep_node in node.op_info.operands.items():
               expr = expr.replace(name, f"{dep_node.constant_value:.15f}f")
-            node.to_constant(literal_eval(expr.replace("f", "")))
+            node.to_constant(eval(expr.replace("f", "")))
             is_const = True
       return is_const
 

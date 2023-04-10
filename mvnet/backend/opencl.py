@@ -52,6 +52,7 @@ class CLContext:
   def alloc_buffer(self, shape, dtype, hostbuf=None):
     size = int(dtype().itemsize * prod(shape))
     buffer = self.mem_pool.allocate(size)
+    # NOTE: `buffer.size` may be bigger than `size`
     if hostbuf is not None:
       assert isinstance(hostbuf, np.ndarray) and hostbuf.dtype == dtype
       self.enqueue("copy", buffer, hostbuf)
@@ -314,10 +315,6 @@ class CLArray(Array):
     self.op_info = SimpleNamespace(operator=None, operands={}, args={})
     self.constant_value = value
 
-  @property
-  def size(self):
-    return self.buffer.size
-
   def numpy(self):
     arr = self.eager() if self.is_lazy else self
     data = np.empty(arr.shape, dtype=arr.dtype)
@@ -448,7 +445,7 @@ class CLArray(Array):
   @classmethod
   def full(cls, shape, value, dtype=float32):
     inst = cls(shape=shape, dtype=dtype)
-    cl.enqueue("fill_buffer", inst.buffer, inst.dtype(value), 0, inst.size)
+    cl.enqueue("fill_buffer", inst.buffer, inst.dtype(value), 0, int(dtype().itemsize * prod(shape)))
     return inst
 
   @classmethod
