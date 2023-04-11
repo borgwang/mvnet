@@ -199,7 +199,6 @@ def test_matmul_op():
   check_array(arr1@arr2, nparr1@nparr2, rtol=1e-3)
 
 def test_getitem():
-  """
   nparr = rnd((5,))
   arr = CLArray(nparr)
   for s in [0, 1, -1]:
@@ -210,7 +209,6 @@ def test_getitem():
         s = slice(start, stop, step)
         # print(s)
         check_array(arr[s], nparr[s])
-  """
   nparr = rnd((5, 5, 5))
   arr = CLArray(nparr)
   for start in [None, 0, 2, 10, -1, -3, -10]:
