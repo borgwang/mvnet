@@ -5,7 +5,6 @@ from mvnet.dtype import float32
 
 
 class NPArray(Array):
-  """Wrap numpy ndarray"""
   def __init__(self, data, shape=None, dtype=float32):
     super().__init__(shape, dtype)
     self.data = np.asarray(data, dtype=dtype)

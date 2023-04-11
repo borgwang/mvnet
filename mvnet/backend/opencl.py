@@ -318,7 +318,8 @@ class CLArray(Array):
   def numpy(self):
     arr = self.eager() if self.is_lazy else self
     data = np.empty(arr.shape, dtype=arr.dtype)
-    cl.enqueue("copy", data, arr.contiguous(eager=True).buffer, is_blocking=True)
+    if prod(arr.shape):
+      cl.enqueue("copy", data, arr.contiguous(eager=True).buffer, is_blocking=True)
     return data
 
   # ##### Elemwise Ops #####
@@ -405,31 +406,52 @@ class CLArray(Array):
     return self.reshape(shape)
 
   def __getitem__(self, key):
-    # TODO: handle step
-    def is_basic(k):
-      return isinstance(k, (slice, int))
+    # https://github.com/python/cpython/blob/d034590294d4618880375a6db513c30bce3e126b/Objects/sliceobject.c#L264
+    def is_basic(k): return isinstance(k, (slice, int))
     assert is_basic(key) or all(is_basic(k) for k in key), f"Advantage indexing not supported yet. {key}"
     key = (key,) if is_basic(key) else key
     inst = copy.copy(self)
     reduce = []
-    shape = list(inst.shape)
+    shape, strides = list(inst.shape), list(inst.strides)
     for i, k in enumerate(key):
       if isinstance(k, int):  # indexing
         if k < 0: k += inst.shape[i]
         assert 0 <= k < inst.shape[i], f"Invalid indexing {key[i]} for tensor {inst.shape}"
         inst.offset += inst.strides[i] * k
         reduce.append(i)
-      if isinstance(k, slice):  # slicing
-        start = 0 if k.start is None else k.start
-        if start < 0: start += inst.shape[i]
-        stop = inst.shape[i] if k.stop is None else k.stop
-        if stop < 0: stop += inst.shape[i]
-        assert 0 <= start < stop <= inst.shape[i], f"Invalid slicing {key[i]} for tensor {inst.shape}"
-        shape[i] = stop - start
-        inst.offset += inst.strides[i] * start
-        inst.c_contiguous, inst.f_contiguous = inst._calculate_contiguity()
+      if isinstance(k, slice):  # slicing/striding
+        start, stop, step = k.start, k.stop, k.step
+        length = shape[i]
+        assert step != 0, "Slice step cannot be zero"
+        if step is None: step = 1
+        if start is None: start = length+1 if step < 0 else 0
+        if stop is None: stop = -length-1 if step < 0 else length+1
+
+        if start < 0:
+          start += length
+          if start < 0:
+            start = -1 if step < 0 else 0
+        elif start >= length:
+          start = length-1 if step < 0 else length
+        if stop < 0:
+          stop += length
+          if stop < 0:
+            stop = -1 if step < 0 else 0
+        elif stop >= length:
+          stop = length-1 if step < 0 else length
+
+        if step < 0 and stop < start:
+          shape[i] = (start - stop - 1) // (-step) + 1
+        elif step > 0 and start < stop:
+          shape[i] = (stop - start - 1) // (step) + 1
+        else:
+          shape[i] = 0
+        if shape[i] > 0:
+          inst.offset += strides[i] * start
+          strides[i] *= step
     inst.shape = tuple(s for i, s in enumerate(shape) if i not in reduce)
-    inst.strides = tuple(s for i, s in enumerate(inst.strides) if i not in reduce)
+    inst.strides = tuple(s for i, s in enumerate(strides) if i not in reduce)
+    inst.c_contiguous, inst.f_contiguous = inst._calculate_contiguity()
     return inst
 
   def __setitem__(self, key, value):
@@ -514,12 +536,13 @@ class CLArray(Array):
     return self
 
   def _calculate_contiguity(self):
-    # https://github.com/numpy/numpy/blob/4c60b3263ac50e5e72f6a909e156314fc3c9cba0/numpy/mvnet/src/multiarray/flagsobject.c#L115
+    # https://github.com/numpy/numpy/blob/93a97649aa0aefc0ee8ee5fc7cb78063bfe67255/numpy/core/src/multiarray/flagsobject.c#L115
     c_contiguous = f_contiguous = True
     if not self.ndim:
       return c_contiguous, f_contiguous
     nitems = 1
     for i in range(self.ndim-1, -1, -1):
+      if self.shape[i] == 0: return True, True
       if self.shape[i] != 1:
         if self.strides[i] != nitems:
           c_contiguous = False

@@ -1,0 +1,2 @@
+class MetalArray:
+  pass

@@ -214,7 +214,6 @@ def test_slice():
 """
 
 def test_minimal():
-  from mvnet.utils.helper import kernelstat
   np.random.seed(0)
   n_epoch = 300
   lr = 0.0001

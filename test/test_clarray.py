@@ -8,25 +8,28 @@ np.random.seed(0)
 rnd = lambda shape: np.random.normal(0, 1, shape).astype(np.float32)
 
 def check_array(myarr, nparr, atol=0, rtol=1e-3, ignore=()):
-  assert myarr.shape == nparr.shape
-  assert myarr.dtype == nparr.dtype
+  assert myarr.shape == nparr.shape, f"shape {myarr.shape} != {nparr.shape}"
+  if DEBUG: print(f"shape {myarr.shape} == {nparr.shape}")
+  assert myarr.dtype == nparr.dtype, f"dtype {myarr.dtype} != {nparr.dtype}"
   assert np.allclose(myarr.numpy(), nparr, atol=atol, rtol=rtol)
   if "stride" not in ignore:
     np_strides = tuple(s // myarr.dtype().itemsize for s in nparr.strides)
-    assert myarr.strides == np_strides
+    assert myarr.strides == np_strides, f"strides {myarr.strides} != {np_strides}"
   if "contig" not in ignore:
-    assert myarr.c_contiguous == nparr.flags.c_contiguous
-    assert myarr.f_contiguous == nparr.flags.f_contiguous
+    assert myarr.c_contiguous == nparr.flags.c_contiguous, \
+      f"c_contiguous {myarr.c_contiguous} != {nparr.flags.c_contiguous}"
+    assert myarr.f_contiguous == nparr.flags.f_contiguous, \
+      f"f_contiguous {myarr.f_contiguous} != {nparr.flags.f_contiguous}"
 
 def test_reshape():
   shape = (2, 3, 4)
   nparr = np.arange(np.prod(shape)).reshape(shape).astype(np.float32)
   arr = CLArray(nparr)
   check_array(arr, nparr)
-  #for s in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
-  #    check_array(arr.reshape(s), nparr.reshape(s))
-  #for s in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
-  #    check_array(arr.T.reshape(s), nparr.T.reshape(s, order="A"))
+  for s in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
+      check_array(arr.reshape(s), nparr.reshape(s))
+  for s in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
+      check_array(arr.T.reshape(s), nparr.T.reshape(s, order="A"))
   for s in ((4, 3, 2), (1, 2, 3, 4), (1, 24), (24,), (3, -1)):
     check_array(arr.permute((0, 2, 1)).reshape(s), nparr.transpose((0, 2, 1)).reshape(s, order="A"))
 
@@ -93,7 +96,6 @@ def test_elemwise_op():
   # on broadcasted array
   shape = (1,)
   nparr = rnd(shape)
-  arr = CLArray(nparr)
   arr = CLArray(nparr).reshape((1, 1, 1)).expand((3, 4, 5))
   nparr = np.broadcast_to(nparr.reshape((1, 1, 1)), (3, 4, 5))
   check_array(arr, nparr)
@@ -195,3 +197,25 @@ def test_matmul_op():
   arr2 = arr2.expand((5, 3))
   nparr2 = np.ascontiguousarray(np.broadcast_to(nparr2, (5, 3)))
   check_array(arr1@arr2, nparr1@nparr2, rtol=1e-3)
+
+def test_getitem():
+  """
+  nparr = rnd((5,))
+  arr = CLArray(nparr)
+  for s in [0, 1, -1]:
+    check_array(arr[s], nparr[s])
+  for start in [None, 0, 2, 10, -1, -3, -10]:
+    for stop in [None, 0, 2, 10, -1, -3, -10]:
+      for step in [None, 1, 2, 3, -2, -3]:
+        s = slice(start, stop, step)
+        # print(s)
+        check_array(arr[s], nparr[s])
+  """
+  nparr = rnd((5, 5, 5))
+  arr = CLArray(nparr)
+  for start in [None, 0, 2, 10, -1, -3, -10]:
+    for stop in [None, 0, 2, 10, -1, -3, -10]:
+      for step in [None, 1, 2, 3, -2, -3]:
+        s = slice(start, stop, step)
+        if DEBUG: print((s, s))
+        check_array(arr[(s, s)], nparr[(s, s)])

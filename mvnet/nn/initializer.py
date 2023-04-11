@@ -55,7 +55,7 @@ class ConstantInit(Initializer):
 
 class ZerosInit(ConstantInit):
   def __init__(self):
-    super().__init__(np.float32(0.0))
+    super().__init__(0.0)
 
 class XavierUniformInit(Initializer):
   def __init__(self, gain=1.0):
