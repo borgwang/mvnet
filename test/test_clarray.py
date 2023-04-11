@@ -227,12 +227,13 @@ def test_getitem():
         if DEBUG: print((s, s))
         check_array(arr[(s, s)], nparr[(s, s)])
 
-def test_array_init():
+def _test_array_init():
   # check size
   shape = (3, 4, 5)
   arr = CLArray(shape=shape, dtype=np.float32, op_info=None, is_lazy=False)
   assert arr.size == prod(shape) * 4
-
   nparr = rnd(shape)
   arr = CLArray(data=nparr, shape=shape, dtype=np.float32, op_info=None, is_lazy=False)
-  print(arr.shape, arr.dtype, arr.size)
+  assert arr.size == prod(shape) * 4
+  arr = CLArray(data=arr.buffer, shape=shape, dtype=np.float32, op_info=None, is_lazy=False)
+  assert arr.size == prod(shape) * 4

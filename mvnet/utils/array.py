@@ -45,3 +45,17 @@ def calculate_slices(start, stop, step, length):
   else:
     size = 0
   return start, stop, step, size
+
+def broadcast(*arrs):
+  # https://numpy.org/doc/stable/user/basics.broadcasting.html
+  reverted_shapes = [arr.shape[::-1] for arr in arrs]
+  min_ndim = min(arr.ndim for arr in arrs)
+  for i in range(min_ndim):
+    unique = {shape[i] for shape in reverted_shapes}
+    if len(unique) > 2 or (len(unique) == 2 and 1 not in unique):
+      raise ValueError(f"Error broadcasting for {arrs}")
+  ndim = max(arr.ndim for arr in arrs)
+  arrs = [a.reshape([1] * (ndim - a.ndim) + list(a.shape)) if a.ndim != ndim else a for a in arrs]
+  broadcast_shape = tuple([max(*s) for s in zip(*[a.shape for a in arrs])])
+  arrs = [a.expand(broadcast_shape) if a.shape != broadcast_shape else a for a in arrs]
+  return arrs

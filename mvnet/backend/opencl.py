@@ -11,7 +11,7 @@ from mvnet.dtype import float32, int32
 from mvnet.env import (DEBUG, GRAPH, LAZY, OPT_CONSTANT_FOLDING, OPT_ELEMWISE_FUSION, OPT_ELEMWISE_PROCESSING_FUSION,
                        OPT_VIEWOP_PRUNING)
 from mvnet.jit.graph import GraphOptimizer
-from mvnet.utils.array import calculate_contiguity, calculate_slices
+from mvnet.utils.array import broadcast, calculate_contiguity, calculate_slices
 from mvnet.utils.helper import kernelstat
 from mvnet.utils.math import prod
 
@@ -59,10 +59,10 @@ class CLContext:
     if hostbuf is not None:
       assert isinstance(hostbuf, np.ndarray) and hostbuf.dtype == dtype
       self.enqueue("copy", buffer, hostbuf)
-    return buffer, size
+    return buffer
 
   def enqueue(self, task, *args, **kwargs):
-    getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs)
+    getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs).wait()
 
 cl = CLContext()
 
@@ -255,7 +255,7 @@ def view_op(op_info):
 def register_elemwise_op(func):
   def wrapper(*inputs, **kwargs):
     if len(inputs) > 1 and len({i.shape for i in inputs}) > 1:
-      inputs = Array.broadcast(*inputs)
+      inputs = broadcast(*inputs)
     op = func(*inputs)
     code = ELEMWISE_MAPPING[op]
     kwargs = {**kwargs, "shape": inputs[0].shape, "dtype": inputs[0].dtype}
@@ -291,32 +291,26 @@ def invoke(op_info):
 class CLArray(Array):
   def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
     super().__init__(shape, dtype, op_info, is_lazy)
-    self.__size = 0
-    # TODO: replace simplenamespace
     self.op_info = SimpleNamespace(operator=None, operands={}, args={}) if op_info is None else op_info
     if not self.is_lazy:
-      if isinstance(data, pyopencl.Buffer):
-        self.__buffer, self.__size = data, data.size
+      if isinstance(data, (pyopencl.Buffer, pyopencl.tools.PooledBuffer)):
         assert self.shape is not None, "Must specify shape when initializing array with raw buffer"
+        self.__buffer = data
       else:
         if data is not None:
           data = np.asarray(data, dtype=self.dtype)
           self.shape = data.shape
           if prod(self.shape) == 1:
-            self.constant_value = float(data)  # TODO: other type
+            self.constant_value = dtype(data)
 
         assert self.shape is not None, "Array shape is None!"
         if self.constant_value is None:
           # NOTE: do not allocate buffer for array with a single element
-          self.__buffer, self.__size = cl.alloc_buffer(self.shape, self.dtype, data)
+          self.__buffer = cl.alloc_buffer(self.shape, self.dtype, data)
     # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
     self.strides = tuple(prod(self.shape[i+1:]) for i in range(self.ndim))
     self.c_contiguous, self.f_contiguous = calculate_contiguity(self.shape, self.strides)
     self.offset = 0  # offset relative to the beginning of the buffer
-
-  @property
-  def size(self):
-    return self.__size
 
   @property
   def buffer(self):

@@ -11,9 +11,8 @@ class NPArray(Array):
     self.shape = self.data.shape
     self.strides = tuple(s // dtype().itemsize for s in self.data.strides)
 
-  @property
-  def size(self): return self.data.nbytes
-  def numpy(self): return self.data.copy()
+  def numpy(self):
+    return self.data.copy()
 
   # ##### Elemwise Ops #####
   def neg(self, out=None): return self.asarray(np.negative(self.data))
@@ -47,12 +46,15 @@ class NPArray(Array):
   @classmethod
   def empty(cls, shape, dtype=float32):
     return cls.asarray(np.empty(shape, dtype))
+
   @classmethod
   def full(cls, shape, value, dtype=float32):
     return cls.asarray(np.full(shape, value, dtype))
+
   @classmethod
   def uniform(cls, a, b, shape, dtype=float32):
     return cls.asarray(np.random.uniform(a, b, shape).astype(dtype))
+
   @classmethod
   def normal(cls, loc, scale, shape, dtype=float32):
     return cls.asarray(np.random.normal(loc, scale, shape).astype(dtype))
