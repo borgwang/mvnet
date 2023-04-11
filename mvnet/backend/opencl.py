@@ -12,8 +12,8 @@ from mvnet.env import (DEBUG, GRAPH, LAZY, OPT_CONSTANT_FOLDING, OPT_ELEMWISE_FU
                        OPT_VIEWOP_PRUNING)
 from mvnet.jit.graph import GraphOptimizer
 from mvnet.utils.array import broadcast, calculate_contiguity, calculate_slices
-from mvnet.utils.helper import kernelstat
 from mvnet.utils.math import prod
+from mvnet.utils.misc import kernelstat
 
 ELEMWISE_MAPPING = {
   ElemwiseOps.NOOP: "A", ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)",
@@ -102,7 +102,7 @@ def elemwise_op(op_info):
   return ret
 
 def matmul_op(op_info):
-  # rule: https://numpy.org/doc/stable/reference/generated/numpy.matmul.html
+  # https://numpy.org/doc/stable/reference/generated/numpy.matmul.html
   a, b = op_info.operands.values()
   ret_shape = op_info.ret_shape
   if op_info.args.get("out", None):
@@ -163,7 +163,8 @@ def matmul_op(op_info):
     args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
   args += [x.buffer for x in extra_inp.values()]
   args += [float32(x.constant_value) for x in extra_const_inp.values()]
-  op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
+  e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
+  e.wait()
   kernelstat.log(op_info.operator)
   return ret
 
@@ -188,8 +189,8 @@ def reduce_op(op_info):
 
   n_grps = (size + grp_size - 1) // grp_size
   ret_shape = calculate_ret_shape(x_shp, axis, keepdims, grp_size, n_grps)
-  # NOTE: for array with constant_value, return a new array filled with the value directly
   if x.constant_value is not None:
+    # NOTE: for array with constant_value, return a new array filled with the value
     return CLArray.full(ret_shape, x.constant_value, x.dtype)
   ret = CLArray(shape=ret_shape, dtype=x.dtype)
 
@@ -278,14 +279,10 @@ def register_reduce_op(func):
 
 def invoke(op_info):
   optype = type(op_info.operator)
-  if optype is ElemwiseOps:
-    return elemwise_op(op_info)
-  if optype is ReduceOps:
-    return reduce_op(op_info)
-  if optype is ProcessingOps:
-    return matmul_op(op_info)
-  if optype is ViewOps:
-    return next(iter(op_info.operands.values()))
+  if optype is ElemwiseOps: return elemwise_op(op_info)
+  if optype is ReduceOps: return reduce_op(op_info)
+  if optype is ProcessingOps: return matmul_op(op_info)
+  if optype is ViewOps: return next(iter(op_info.operands.values()))
   raise ValueError(f"Invoke invalid operator {op_info.operator}")
 
 class CLArray(Array):
@@ -459,9 +456,8 @@ class CLArray(Array):
     buffer = cl.rng.normal(mu=loc, sigma=scale, shape=shape, dtype=dtype, cq=cl.queue).data
     return cls(data=buffer, shape=shape, dtype=dtype)
 
-  # ##### Lazy #####
   def update_from_eager(self, eager):
-    self.buffer = eager.buffer
+    self.__buffer = eager.buffer
     self.is_lazy = False
     self.op_info = SimpleNamespace(operator=None, operands={})
     self.constant_value = eager.constant_value

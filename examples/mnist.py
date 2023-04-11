@@ -16,7 +16,7 @@ from mvnet.nn.loss import SoftmaxCrossEntropyLoss
 from mvnet.nn.net import SequentialNet
 from mvnet.nn.optimizer import SGD, Adam
 from mvnet.tensor import Tensor
-from mvnet.utils.helper import kernelstat
+from mvnet.utils.misc import kernelstat
 
 
 def get_one_hot(targets, nb_classes):

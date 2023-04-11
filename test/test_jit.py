@@ -3,7 +3,7 @@ import numpy as np
 from mvnet.backend.base import CreationOps, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps
 from mvnet.env import *
 from mvnet.tensor import Tensor
-from mvnet.utils.helper import kernelstat
+from mvnet.utils.misc import kernelstat
 
 np.random.seed(0)
 
@@ -183,7 +183,7 @@ def test_graph_optimizer():
 
 def test_minimal():
   if not LAZY: return
-  from mvnet.utils.helper import kernelstat
+  from mvnet.utils.misc import kernelstat
   np.random.seed(0)
   n_epoch = 50
   lr = 0.0001

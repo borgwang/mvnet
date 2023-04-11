@@ -1,5 +1,5 @@
-from mvnet.utils.helper import genname
 from mvnet.utils.math import argsort
+from mvnet.utils.misc import genname
 
 
 def unbroadcast(func, shape):

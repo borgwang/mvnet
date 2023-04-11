@@ -4,7 +4,7 @@ from collections import defaultdict
 import networkx as nx
 
 from mvnet.backend.base import ElemwiseOps, ProcessingOps, ReduceOps, ViewOps
-from mvnet.utils.helper import varnamegetter
+from mvnet.utils.misc import varnamegetter
 
 
 class GraphOptimizer:
