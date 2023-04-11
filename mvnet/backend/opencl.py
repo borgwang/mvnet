@@ -406,39 +406,36 @@ class CLArray(Array):
     return self.reshape(shape)
 
   def __getitem__(self, key):
-    # https://github.com/python/cpython/blob/d034590294d4618880375a6db513c30bce3e126b/Objects/sliceobject.c#L264
-    def is_basic(k): return isinstance(k, (slice, int))
-    assert is_basic(key) or all(is_basic(k) for k in key), f"Advantage indexing not supported yet. {key}"
-    key = (key,) if is_basic(key) else key
+    assert isinstance(key, (slice, int)) or all(isinstance(k, (slice, int)) for k in key), \
+      f"Advantage indexing not supported yet. {key}"
+    key = (key,) if isinstance(key, (slice, int)) else key
     inst = copy.copy(self)
-    reduce = []
+    reduce_dim = []
     shape, strides = list(inst.shape), list(inst.strides)
     for i, k in enumerate(key):
       if isinstance(k, int):  # indexing
         if k < 0: k += inst.shape[i]
-        assert 0 <= k < inst.shape[i], f"Invalid indexing {key[i]} for tensor {inst.shape}"
+        assert 0 <= k < inst.shape[i], f"Invalid indexing {k} for tensor {inst.shape}"
         inst.offset += inst.strides[i] * k
-        reduce.append(i)
+        reduce_dim.append(i)
       if isinstance(k, slice):  # slicing/striding
+        # https://github.com/python/cpython/blob/d034590294d4618880375a6db513c30bce3e126b/Objects/sliceobject.c#L264
         start, stop, step = k.start, k.stop, k.step
-        length = shape[i]
         assert step != 0, "Slice step cannot be zero"
         if step is None: step = 1
-        if start is None: start = length+1 if step < 0 else 0
-        if stop is None: stop = -length-1 if step < 0 else length+1
+        if start is None: start = shape[i]+1 if step < 0 else 0
+        if stop is None: stop = -shape[i]-1 if step < 0 else shape[i]+1
 
         if start < 0:
-          start += length
-          if start < 0:
-            start = -1 if step < 0 else 0
-        elif start >= length:
-          start = length-1 if step < 0 else length
+          start += shape[i]
+          if start < 0: start = -1 if step < 0 else 0
+        elif start >= shape[i]:
+          start = shape[i]-1 if step < 0 else shape[i]
         if stop < 0:
-          stop += length
-          if stop < 0:
-            stop = -1 if step < 0 else 0
-        elif stop >= length:
-          stop = length-1 if step < 0 else length
+          stop += shape[i]
+          if stop < 0: stop = -1 if step < 0 else 0
+        elif stop >= shape[i]:
+          stop = shape[i]-1 if step < 0 else shape[i]
 
         if step < 0 and stop < start:
           shape[i] = (start - stop - 1) // (-step) + 1
@@ -446,11 +443,11 @@ class CLArray(Array):
           shape[i] = (stop - start - 1) // (step) + 1
         else:
           shape[i] = 0
-        if shape[i] > 0:
+        if shape[i]:
           inst.offset += strides[i] * start
           strides[i] *= step
-    inst.shape = tuple(s for i, s in enumerate(shape) if i not in reduce)
-    inst.strides = tuple(s for i, s in enumerate(strides) if i not in reduce)
+    inst.shape = tuple(s for i, s in enumerate(shape) if i not in reduce_dim)
+    inst.strides = tuple(s for i, s in enumerate(strides) if i not in reduce_dim)
     inst.c_contiguous, inst.f_contiguous = inst._calculate_contiguity()
     return inst
 
