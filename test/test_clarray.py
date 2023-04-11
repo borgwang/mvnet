@@ -2,6 +2,7 @@ import numpy as np
 
 from mvnet.backend.opencl import CLArray
 from mvnet.env import DEBUG
+from mvnet.utils.math import prod
 
 np.random.seed(0)
 
@@ -207,7 +208,7 @@ def test_getitem():
     for stop in [None, 0, 2, 10, -1, -3, -10]:
       for step in [None, 1, 2, 3, -2, -3]:
         s = slice(start, stop, step)
-        # print(s)
+        if DEBUG: print(s)
         check_array(arr[s], nparr[s])
   nparr = rnd((5, 5, 5))
   arr = CLArray(nparr)
@@ -217,3 +218,21 @@ def test_getitem():
         s = slice(start, stop, step)
         if DEBUG: print((s, s))
         check_array(arr[(s, s)], nparr[(s, s)])
+  arr = arr.permute((0, 2, 1))
+  nparr = nparr.transpose((0, 2, 1))
+  for start in [None, 0, 2, 10, -1, -3, -10]:
+    for stop in [None, 0, 2, 10, -1, -3, -10]:
+      for step in [None, 1, 2, 3, -2, -3]:
+        s = slice(start, stop, step)
+        if DEBUG: print((s, s))
+        check_array(arr[(s, s)], nparr[(s, s)])
+
+def test_array_init():
+  # check size
+  shape = (3, 4, 5)
+  arr = CLArray(shape=shape, dtype=np.float32, op_info=None, is_lazy=False)
+  assert arr.size == prod(shape) * 4
+
+  nparr = rnd(shape)
+  arr = CLArray(data=nparr, shape=shape, dtype=np.float32, op_info=None, is_lazy=False)
+  print(arr.shape, arr.dtype, arr.size)

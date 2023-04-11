@@ -11,14 +11,17 @@ from mvnet.dtype import float32, int32
 from mvnet.env import (DEBUG, GRAPH, LAZY, OPT_CONSTANT_FOLDING, OPT_ELEMWISE_FUSION, OPT_ELEMWISE_PROCESSING_FUSION,
                        OPT_VIEWOP_PRUNING)
 from mvnet.jit.graph import GraphOptimizer
+from mvnet.utils.array import calculate_contiguity, calculate_slices
 from mvnet.utils.helper import kernelstat
 from mvnet.utils.math import prod
 
 ELEMWISE_MAPPING = {
-    ElemwiseOps.NOOP: "A", ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)", ElemwiseOps.LOG: "log(A)",
-    ElemwiseOps.ADD: "A+B", ElemwiseOps.SUB: "A-B", ElemwiseOps.DIV: "A/B", ElemwiseOps.MUL: "A*B", ElemwiseOps.POW: "pow(A,B)",
-    ElemwiseOps.EQ: "(float)isequal(A,B)", ElemwiseOps.GE: "(float)isgreaterequal(A,B)", ElemwiseOps.GT: "(float)isgreater(A,B)",
-    ElemwiseOps.RELU: "max(A,0.0f)", ElemwiseOps.DRELU: "B>0?A:0.0f"
+  ElemwiseOps.NOOP: "A", ElemwiseOps.NEG: "-A", ElemwiseOps.EXP: "exp(A)",
+  ElemwiseOps.LOG: "log(A)", ElemwiseOps.ADD: "A+B", ElemwiseOps.SUB: "A-B",
+  ElemwiseOps.DIV: "A/B", ElemwiseOps.MUL: "A*B", ElemwiseOps.POW: "pow(A,B)",
+  ElemwiseOps.EQ: "(float)isequal(A,B)", ElemwiseOps.GE: "(float)isgreaterequal(A,B)",
+  ElemwiseOps.GT: "(float)isgreater(A,B)", ElemwiseOps.RELU: "max(A,0.0f)",
+  ElemwiseOps.DRELU: "B>0?A:0.0f"
 }
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
@@ -56,7 +59,7 @@ class CLContext:
     if hostbuf is not None:
       assert isinstance(hostbuf, np.ndarray) and hostbuf.dtype == dtype
       self.enqueue("copy", buffer, hostbuf)
-    return buffer
+    return buffer, size
 
   def enqueue(self, task, *args, **kwargs):
     getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs)
@@ -246,7 +249,7 @@ def view_op(op_info):
     shape = tuple(inst.shape[a] for a in axes)
     strides = tuple(inst.strides[a] for a in axes)
   inst.shape, inst.strides = tuple(shape), tuple(strides)
-  inst.c_contiguous, inst.f_contiguous = inst._calculate_contiguity()
+  inst.c_contiguous, inst.f_contiguous = calculate_contiguity(inst.shape, inst.strides)
   return inst
 
 def register_elemwise_op(func):
@@ -288,27 +291,36 @@ def invoke(op_info):
 class CLArray(Array):
   def __init__(self, data=None, shape=None, dtype=float32, op_info=None, is_lazy=False):
     super().__init__(shape, dtype, op_info, is_lazy)
+    self.__size = 0
     # TODO: replace simplenamespace
     self.op_info = SimpleNamespace(operator=None, operands={}, args={}) if op_info is None else op_info
     if not self.is_lazy:
       if isinstance(data, pyopencl.Buffer):
-        self.buffer = data
-        assert self.shape is not None, "Can not infer shape when initialize using clbuffer"
+        self.__buffer, self.__size = data, data.size
+        assert self.shape is not None, "Must specify shape when initializing array with raw buffer"
       else:
         if data is not None:
           data = np.asarray(data, dtype=self.dtype)
           self.shape = data.shape
           if prod(self.shape) == 1:
-            self.constant_value = float(data)
+            self.constant_value = float(data)  # TODO: other type
 
         assert self.shape is not None, "Array shape is None!"
         if self.constant_value is None:
           # NOTE: do not allocate buffer for array with a single element
-          self.buffer = cl.alloc_buffer(self.shape, self.dtype, data)
+          self.__buffer, self.__size = cl.alloc_buffer(self.shape, self.dtype, data)
     # meta infos (https://numpy.org/doc/stable/dev/internals.html#numpy-internals)
     self.strides = tuple(prod(self.shape[i+1:]) for i in range(self.ndim))
-    self.c_contiguous, self.f_contiguous = self._calculate_contiguity()
+    self.c_contiguous, self.f_contiguous = calculate_contiguity(self.shape, self.strides)
     self.offset = 0  # offset relative to the beginning of the buffer
+
+  @property
+  def size(self):
+    return self.__size
+
+  @property
+  def buffer(self):
+    return self.__buffer
 
   def to_constant(self, value):
     self.is_lazy = False
@@ -419,42 +431,18 @@ class CLArray(Array):
         inst.offset += inst.strides[i] * k
         reduce_dim.append(i)
       if isinstance(k, slice):  # slicing/striding
-        # https://github.com/python/cpython/blob/d034590294d4618880375a6db513c30bce3e126b/Objects/sliceobject.c#L264
-        start, stop, step = k.start, k.stop, k.step
-        assert step != 0, "Slice step cannot be zero"
-        if step is None: step = 1
-        if start is None: start = shape[i]+1 if step < 0 else 0
-        if stop is None: stop = -shape[i]-1 if step < 0 else shape[i]+1
-
-        if start < 0:
-          start += shape[i]
-          if start < 0: start = -1 if step < 0 else 0
-        elif start >= shape[i]:
-          start = shape[i]-1 if step < 0 else shape[i]
-        if stop < 0:
-          stop += shape[i]
-          if stop < 0: stop = -1 if step < 0 else 0
-        elif stop >= shape[i]:
-          stop = shape[i]-1 if step < 0 else shape[i]
-
-        if step < 0 and stop < start:
-          shape[i] = (start - stop - 1) // (-step) + 1
-        elif step > 0 and start < stop:
-          shape[i] = (stop - start - 1) // (step) + 1
-        else:
-          shape[i] = 0
+        start, _, step, size = calculate_slices(k.start, k.stop, k.step, shape[i])
+        shape[i] = size
         if shape[i]:
           inst.offset += strides[i] * start
           strides[i] *= step
     inst.shape = tuple(s for i, s in enumerate(shape) if i not in reduce_dim)
     inst.strides = tuple(s for i, s in enumerate(strides) if i not in reduce_dim)
-    inst.c_contiguous, inst.f_contiguous = inst._calculate_contiguity()
+    inst.c_contiguous, inst.f_contiguous = calculate_contiguity(inst.shape, inst.strides)
     return inst
 
   def __setitem__(self, key, value):
-    # unary_op("noop", value, ret=item)
-    # TODO: implement assign ops
-    assert False
+    raise NotImplementedError(f"__setitem__ not implemented for {self.__class__.__name__}")
 
   # ##### Creation Ops #####
   @classmethod
@@ -531,23 +519,3 @@ class CLArray(Array):
         graphoptimizer.visualize(self, graph_name)
     recursive_eager(node=self)
     return self
-
-  def _calculate_contiguity(self):
-    # https://github.com/numpy/numpy/blob/93a97649aa0aefc0ee8ee5fc7cb78063bfe67255/numpy/core/src/multiarray/flagsobject.c#L115
-    c_contiguous = f_contiguous = True
-    if not self.ndim:
-      return c_contiguous, f_contiguous
-    nitems = 1
-    for i in range(self.ndim-1, -1, -1):
-      if self.shape[i] == 0: return True, True
-      if self.shape[i] != 1:
-        if self.strides[i] != nitems:
-          c_contiguous = False
-        nitems *= self.shape[i]
-    nitems = 1
-    for i in range(self.ndim):
-      if self.shape[i] != 1:
-        if self.strides[i] != nitems:
-          f_contiguous = False
-        nitems *= self.shape[i]
-    return c_contiguous, f_contiguous
