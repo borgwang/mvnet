@@ -5,21 +5,22 @@ mvnet is a small but fully functional deep learning framework built on top of [t
 ### Features
 - automatic differentiation
 - support numpy/opencl backends
+- pytorch-like api
 
 ### TODOs
 - ops
   - conv/tconv op
-  - slice op
-- unit testing
 - speedup
   - kernel-level optimization
     - relu & drelu
+    - gemm
   - graph-level optimization
 - backend
-  - support cuda backend
+  - cuda
+  - llvm
+  - metal
 
 ### Laziness
-
 - A lazy node attributes: shape, strides, operator, operands, extra args
 - Recursive invoke the computation when we call eager on a lazy node
 
@@ -28,7 +29,6 @@ mvnet is a small but fully functional deep learning framework built on top of [t
 # profile forward
 GRAPH=1 LAZY=1 BACKEND=opencl python3 examples/mnist.py --batch_size 4096 --eval 1 --profile_forward 1
 ```
-
 ```
 # backend numpy: ~0.65s per epoch
 LAZY=0 BACKEND=numpy python3 examples/mnist.py --batch_size 4096 --eval 1
