@@ -26,6 +26,8 @@ ELEMWISE_MAPPING = {
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
+import os
+GEMM = int(os.getenv("GEMM", "1"))
 
 class CLContext:
   def __init__(self):
@@ -112,7 +114,7 @@ def matmul_op(op_info):
     ret = CLArray(shape=ret_shape, dtype=a.dtype)
   BS, M, K, N = prod(a.shape[:-2]), a.shape[-2], a.shape[-1], b.shape[-1]
   gs = 1
-  while gs <= 8 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
+  while gs <= 64 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
     gs *= 2
   gs //= 2
   if DEBUG: print(f"[DEBUG] BS:{BS} M:{M} K:{K} N:{N} grp_size:{gs}")
@@ -129,42 +131,137 @@ def matmul_op(op_info):
     extra_strides = ''.join(''.join(f'int {n}_s{i}, ' for i in range(arr.ndim)) for n, arr in extra_inp.items()) + ''.join(f'int res_s{i}, ' for i in range(ret.ndim))
     extra_gl2lc = ''.join(f'idx=ptr/res_s{i}; ptr%=res_s{i}; ' + ''.join(f'{n}_i+=idx*{n}_s{i}; ' for n, arr in extra_inp.items() if i < arr.ndim) for i in range(ret.ndim))
 
-  op = cl.build("matmul_op", f"""
-  __kernel void matmul_op(
-    int BS, int M, int N, int K,
-    {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
-    int a_ofst, int b_ofst,
-    {extra_strides}
-    {''.join(f'__global const float *inp_{n}, ' for n in extra_inp)}
-    {''.join(f'const float {n}, ' for n in extra_const_inp)}
-    __global const float *A, __global const float *B, __global float *C
-  ) {{
-    int bs=get_global_id(0), m=get_global_id(1), n=get_global_id(2), i=get_local_id(1), j=get_local_id(2);
-    __local float Alcl[{gs}][{gs}], Blcl[{gs}][{gs}];
-    float acc = 0.0f;
-    for (int t=0; t<K/{gs}; t++) {{
-      Alcl[i][j] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j)*A_s2 + a_ofst];
-      Blcl[i][j] = B[bs*B_s0 + (t*{gs}+i)*B_s1 + n*B_s2 + b_ofst];
-      barrier(CLK_LOCAL_MEM_FENCE);
-      for (int k=0; k<{gs}; k++) acc += Alcl[i][k] * Blcl[k][j];
-      barrier(CLK_LOCAL_MEM_FENCE);
-    }}
-    // C[bs*M*N+m*N+n] = acc;
-    // NOTE: handle non-contiguous extra_inp
-    int k = bs*M*N+m*N+n, ptr=k, idx=0;
-    {''.join(f'int {n}_i=0; ' for n in extra_inp)}
-    {extra_gl2lc}
-    {''.join(f'float {n}=inp_{n}[{n}_i]; ' for n in extra_inp)}
-    C[k] = {extra_code};
-  }}""")
-  strides = [s for ss in zip(a.strides, b.strides) for s in ss]
-  args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
-  if extra_inp:
-    args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
-  args += [x.buffer for x in extra_inp.values()]
-  args += [float32(x.constant_value) for x in extra_const_inp.values()]
-  e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
-  e.wait()
+  if GEMM == 0:
+    op = cl.build("matmul_op", f"""
+    __kernel void matmul_op(
+      int BS, int M, int N, int K,
+      {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
+      int a_ofst, int b_ofst,
+      __global const float *A, __global const float *B, __global float *C
+    ) {{
+      int bs=get_global_id(0), m=get_global_id(1), n=get_global_id(2);
+      float acc = 0.0f;
+      for (int k=0; k<K; k++) {{
+        acc += A[bs*A_s0 + m*A_s1 + k] * B[bs*B_s0 + k*B_s1 + n];
+      }}
+      C[bs*M*N+m*N+n] = acc;
+    }}""")
+    strides = [s for ss in zip(a.strides, b.strides) for s in ss]
+    args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
+    e = op((BS, M, N), None, *args, a.buffer, b.buffer, ret.buffer)
+    e.wait()
+  elif GEMM == 1:
+    op = cl.build("matmul_op", f"""
+    __kernel void matmul_op(
+     int BS, int M, int N, int K,
+     {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
+     int a_ofst, int b_ofst,
+     {extra_strides}
+     {''.join(f'__global const float *inp_{n}, ' for n in extra_inp)}
+     {''.join(f'const float {n}, ' for n in extra_const_inp)}
+     __global const float *A, __global const float *B, __global float *C
+    ) {{
+     int grpid0=get_group_id(0), grpid1=get_group_id(1), grpid2=get_group_id(2);
+     int i=get_local_id(1), j=get_local_id(2);
+     int bs=get_global_id(0), m=grpid1*{gs}+i, n=grpid2*{gs}+j;
+     __local float Alcl[{gs}][{gs}], Blcl[{gs}][{gs}];
+     float acc = 0.0f;
+     for (int t=0; t<K/{gs}; t++) {{
+       Alcl[i][j] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j)*A_s2 + a_ofst];
+       Blcl[i][j] = B[bs*B_s0 + (t*{gs}+i)*B_s1 + n*B_s2 + b_ofst];
+       barrier(CLK_LOCAL_MEM_FENCE);
+       for (int k=0; k<{gs}; k++) acc += Alcl[i][k] * Blcl[k][j];
+       barrier(CLK_LOCAL_MEM_FENCE);
+     }}
+     // C[bs*M*N+m*N+n] = acc;
+     // NOTE: handle non-contiguous extra_inp
+     int k = bs*M*N+m*N+n, ptr=k, idx=0;
+     {''.join(f'int {n}_i=0; ' for n in extra_inp)}
+     {extra_gl2lc}
+     {''.join(f'float {n}=inp_{n}[{n}_i]; ' for n in extra_inp)}
+     C[k] = {extra_code};
+    }}""")
+    strides = [s for ss in zip(a.strides, b.strides) for s in ss]
+    args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
+    if extra_inp:
+      args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
+    args += [x.buffer for x in extra_inp.values()]
+    args += [float32(x.constant_value) for x in extra_const_inp.values()]
+    _global, _local = (BS, M, N), (1, gs, gs)
+    print(f"global={_global} local={_local}")
+    print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
+    e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
+    e.wait()
+  elif GEMM == 2:
+    debug_grp = (0, 1)
+    debug_worker = 0
+
+    #gs = 64
+    #WPT = 64
+    RTS = 1
+    WPT = gs // RTS
+    #RTS = gs // WPT
+    op = cl.build("matmul_op", rf"""
+    __kernel void matmul_op(
+     int BS, int M, int N, int K,
+     {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
+     int a_ofst, int b_ofst,
+     __global const float *A, __global const float *B, __global float *C
+    ) {{
+     int grpid0=get_group_id(0), grpid1=get_group_id(1), grpid2=get_group_id(2);
+     int i=get_local_id(1), j=get_local_id(2);
+     int bs=get_global_id(0), m=grpid1*{gs}+i, n=grpid2*{gs}+j;
+     __local float Alcl[{gs}][{gs}], Blcl[{gs}][{gs}];
+     float acc[{WPT}];
+     for (int p=0; p<{WPT}; p++) acc[p] = 0.0f;
+     for (int t=0; t<K/{gs}; t++) {{
+       for (int p=0; p<{WPT}; p++) {{
+         //if (grpid1=={debug_grp[0]} && grpid2=={debug_grp[1]} && i=={debug_worker}) {{
+           //printf("copy B[%d] to Blcl[%d][%d]\n", bs*B_s0 + (t*{gs}+i)*B_s1 + (n*{gs}+p*{RTS})*B_s2 + b_ofst, i, j+p*{RTS});
+         //}}
+         Alcl[i][j+p*{RTS}] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j+p*{RTS})*A_s2 + a_ofst];
+         Blcl[i][j+p*{RTS}] = B[bs*B_s0 + (t*{gs}+i)*B_s1 + (n+p*{RTS})*B_s2 + b_ofst];
+       }}
+       barrier(CLK_LOCAL_MEM_FENCE);
+       for (int k=0; k<{gs}; k++) {{
+         float tmp = Alcl[i][k];
+         for (int p=0; p<{WPT}; p++) {{
+           acc[p] += tmp * Blcl[k][j+p*{RTS}];
+           //if (grpid1=={debug_grp[0]} && grpid2=={debug_grp[1]} && i=={debug_worker}) {{
+             //printf("multiply Alcl[%d][%d]=%f with Blcl[%d][%d]=%f and add to %d, curr_value=%f\n", i, k, tmp, k, j+p*{RTS},Blcl[k][j+p*{RTS}], p, acc[p]);
+           //}}
+         }}
+       }}
+       barrier(CLK_LOCAL_MEM_FENCE);
+     }}
+     //if (grpid1=={debug_grp[0]} && grpid2=={debug_grp[1]} && i=={debug_worker}) {{
+       //printf("bs*M*N=%d\n", bs*M*N);
+       //printf("m*N=%d\n", m*N);
+       //printf("n=%d\n", n);
+     //}}
+     for (int p=0; p<{WPT}; p++) {{
+       //if (grpid1=={debug_grp[0]} && grpid2=={debug_grp[1]} && i=={debug_worker}){{
+         //printf("p%d=%f write to %d base=%d offset=%d\n", p, acc[p], bs*M*N+m*N+(n+p*{WPT}), bs*M*N+m*N, (n+p*{WPT}));
+       //}}
+       C[bs*M*N+m*N+(n+p*{RTS})] = acc[p];
+     }}
+    }}""")
+    strides = [s for ss in zip(a.strides, b.strides) for s in ss]
+    args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
+    _global, _local = (BS, M, N//WPT), (1, gs, gs//WPT)
+
+    import time
+    st = time.monotonic()
+    e = op(_global, _local, *args, a.buffer, b.buffer, ret.buffer)
+    e.wait()
+    et = time.monotonic()
+    print(f"global={_global} local={_local}")
+    print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
+    print(f"real timecost: {(et-st)*1e3:.3f}ms")
+  else:
+    raise ValueError(f"Invalid environ GEMM={GEMM}")
+
+  #e.wait()
   kernelstat.log(op_info.operator)
   return ret
 
