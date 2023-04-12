@@ -27,6 +27,7 @@ REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
 import os
+
 GEMM = int(os.getenv("GEMM", "1"))
 
 class CLContext:
@@ -114,10 +115,9 @@ def matmul_op(op_info):
     ret = CLArray(shape=ret_shape, dtype=a.dtype)
   BS, M, K, N = prod(a.shape[:-2]), a.shape[-2], a.shape[-1], b.shape[-1]
   gs = 1
-  while gs <= 64 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
+  while gs <= 8 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
     gs *= 2
   gs //= 2
-  if DEBUG: print(f"[DEBUG] BS:{BS} M:{M} K:{K} N:{N} grp_size:{gs}")
 
   # extra post compute
   # TODO: refactor extra
@@ -195,6 +195,10 @@ def matmul_op(op_info):
   elif GEMM == 2:
     debug_grp = (0, 1)
     debug_worker = 0
+    gs = 1
+    while gs <= 64 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
+      gs *= 2
+    gs //= 2
 
     #gs = 64
     #WPT = 64
