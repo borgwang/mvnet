@@ -28,7 +28,7 @@ REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
 import os
 
-GEMM = int(os.getenv("GEMM", "1"))
+GEMM = int(os.getenv("GEMM", "2"))
 
 class CLContext:
   def __init__(self):
@@ -94,8 +94,7 @@ def elemwise_op(op_info):
     // get elements from input
     {''.join(f'float {n}=inp_{n}[{n}_i+{n}_ofst]; ' for n in inp)}
     ret[gl_id] = {op_info.code};
-  }}
-  """)
+  }}""")
   args = [int32(s) for x in list(inp.values()) + [ret] for s in x.strides]
   args += [int32(x.offset) for x in inp.values()]
   args += [x.buffer for x in inp.values()]
@@ -149,7 +148,7 @@ def matmul_op(op_info):
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
     e = op((BS, M, N), None, *args, a.buffer, b.buffer, ret.buffer)
-    e.wait()
+    #e.wait()
   elif GEMM == 1:
     op = cl.build("matmul_op", f"""
     __kernel void matmul_op(
@@ -187,9 +186,9 @@ def matmul_op(op_info):
       args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
     args += [x.buffer for x in extra_inp.values()]
     args += [float32(x.constant_value) for x in extra_const_inp.values()]
-    _global, _local = (BS, M, N), (1, gs, gs)
-    print(f"global={_global} local={_local}")
-    print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
+    #_global, _local = (BS, M, N), (1, gs, gs)
+    #print(f"global={_global} local={_local}")
+    #print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
     e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
     e.wait()
   elif GEMM == 2:
@@ -254,14 +253,69 @@ def matmul_op(op_info):
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
     _global, _local = (BS, M, N//WPT), (1, gs, gs//WPT)
 
-    import time
-    st = time.monotonic()
+    #import time
+    #st = time.monotonic()
     e = op(_global, _local, *args, a.buffer, b.buffer, ret.buffer)
-    e.wait()
-    et = time.monotonic()
+    #e.wait()
+    #et = time.monotonic()
+    #print(f"global={_global} local={_local}")
+    #print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
+    #print(f"real timecost: {(et-st)*1e3:.3f}ms")
+  elif GEMM == 3:
+    WIDTH = 4
+    op = cl.build("matmul_op", rf"""
+    __kernel void matmul_op(
+     int BS, int M, int N, int K,
+     {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
+     int a_ofst, int b_ofst,
+     {extra_strides}
+     {''.join(f'__global const float *inp_{n}, ' for n in extra_inp)}
+     {''.join(f'const float {n}, ' for n in extra_const_inp)}
+     __global const float{WIDTH} *A, __global const float{WIDTH} *B, __global float{WIDTH} *C
+    ) {{
+     int grpid0=get_group_id(0), grpid1=get_group_id(1), grpid2=get_group_id(2);
+     int i=get_local_id(1), j=get_local_id(2);
+     int bs=get_global_id(0), m=grpid1*{gs//WIDTH}+i, n=grpid2*{gs}+j;
+     printf("m,n=(%d,%d)\n", m,n);
+     __local float{WIDTH} Alcl[{gs}][{gs//WIDTH}], Blcl[{gs}][{gs//WIDTH}];
+     float{WIDTH} acc = {{ {','.join('0.0f' for _ in range(WIDTH))} }};
+     for (int t=0; t<K/{gs}; t++) {{
+       Alcl[i][j] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j)*(A_s2/{WIDTH}) + a_ofst];
+       Blcl[i][j] = B[bs*B_s0 + (t*{gs//WIDTH}+i)*B_s1 + n*(B_s2/{WIDTH}) + b_ofst];
+       barrier(CLK_LOCAL_MEM_FENCE);
+       float{WIDTH} vecA, vecB;
+       float valB;
+       for (int k=0; k<{gs//WIDTH}; k++) {{
+         vecB = Blcl[i][k];
+         for (int w=0; w<{WIDTH}; w++) {{
+           vecA = Alcl[{WIDTH}*k+w][j];
+           switch(w) {{
+             case 0: valB = vecB.x; break;
+             case 1: valB = vecB.y; break;
+             case 2: valB = vecB.z; break;
+             case 3: valB = vecB.w; break;
+           }}
+           acc.x += vecA.x * valB;
+           acc.y += vecA.y * valB;
+           acc.z += vecA.z * valB;
+           acc.w += vecA.w * valB;
+         }}
+       }}
+       barrier(CLK_LOCAL_MEM_FENCE);
+     }}
+     C[bs*M*N+m*N+n] = acc;
+    }}""")
+    strides = [s for ss in zip(a.strides, b.strides) for s in ss]
+    args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
+    if extra_inp:
+      args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
+    args += [x.buffer for x in extra_inp.values()]
+    args += [float32(x.constant_value) for x in extra_const_inp.values()]
+    _global, _local = (BS, M//WIDTH, N), (1, gs//WIDTH, gs)
     print(f"global={_global} local={_local}")
     print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
-    print(f"real timecost: {(et-st)*1e3:.3f}ms")
+    e = op(_global, _local, *args, a.buffer, b.buffer, ret.buffer)
+    e.wait()
   else:
     raise ValueError(f"Invalid environ GEMM={GEMM}")
 
