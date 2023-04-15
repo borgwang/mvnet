@@ -147,8 +147,7 @@ def matmul_op(op_info):
     }}""")
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
-    e = op((BS, M, N), None, *args, a.buffer, b.buffer, ret.buffer)
-    #e.wait()
+    _global, _local = (BS, M, N), None
   elif GEMM == 1:
     op = cl.build("matmul_op", f"""
     __kernel void matmul_op(
@@ -186,11 +185,7 @@ def matmul_op(op_info):
       args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
     args += [x.buffer for x in extra_inp.values()]
     args += [float32(x.constant_value) for x in extra_const_inp.values()]
-    #_global, _local = (BS, M, N), (1, gs, gs)
-    #print(f"global={_global} local={_local}")
-    #print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
-    e = op((BS, M, N), (1, gs, gs), *args, a.buffer, b.buffer, ret.buffer)
-    e.wait()
+    _global, _local = (BS, M, N), (1, gs, gs)
   elif GEMM == 2:
     debug_grp = (0, 1)
     debug_worker = 0
@@ -198,7 +193,6 @@ def matmul_op(op_info):
     while gs <= 64 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
       gs *= 2
     gs //= 2
-
     #gs = 64
     #WPT = 64
     RTS = 1
@@ -252,17 +246,11 @@ def matmul_op(op_info):
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
     _global, _local = (BS, M, N//WPT), (1, gs, gs//WPT)
-
-    #import time
-    #st = time.monotonic()
-    e = op(_global, _local, *args, a.buffer, b.buffer, ret.buffer)
-    #e.wait()
-    #et = time.monotonic()
-    #print(f"global={_global} local={_local}")
-    #print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
-    #print(f"real timecost: {(et-st)*1e3:.3f}ms")
   elif GEMM == 3:
-    WIDTH = 4
+    gs = 64
+    debug_grp = (0, 0)
+    debug_thread = (0, 1) # asd
+    WIDTH = 16
     op = cl.build("matmul_op", rf"""
     __kernel void matmul_op(
      int BS, int M, int N, int K,
@@ -276,34 +264,72 @@ def matmul_op(op_info):
      int grpid0=get_group_id(0), grpid1=get_group_id(1), grpid2=get_group_id(2);
      int i=get_local_id(1), j=get_local_id(2);
      int bs=get_global_id(0), m=grpid1*{gs//WIDTH}+i, n=grpid2*{gs}+j;
-     printf("m,n=(%d,%d)\n", m,n);
+     //printf("m,n=(%d,%d) i,j=(%d,%d)\n", m,n,i,j);
+     bool is_debug = {DEBUG}&&grpid1=={debug_grp[0]}&&grpid2=={debug_grp[1]}&&i=={debug_thread[0]}&&j=={debug_thread[1]};
+
      __local float{WIDTH} Alcl[{gs}][{gs//WIDTH}], Blcl[{gs}][{gs//WIDTH}];
      float{WIDTH} acc = {{ {','.join('0.0f' for _ in range(WIDTH))} }};
+
+     if (is_debug){{
+       //float{WIDTH} tmp = A[1];
+       //printf("tmp %f %f %f %f\n", tmp.x, tmp.y, tmp.z, tmp.w);
+     }}
+
      for (int t=0; t<K/{gs}; t++) {{
-       Alcl[i][j] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j)*(A_s2/{WIDTH}) + a_ofst];
-       Blcl[i][j] = B[bs*B_s0 + (t*{gs//WIDTH}+i)*B_s1 + n*(B_s2/{WIDTH}) + b_ofst];
+       int A_idx = bs*A_s0 + m*A_s1/{WIDTH} + (t*{gs}/{WIDTH}+j)*A_s2 + a_ofst;
+       int B_idx = bs*B_s0 + (t*{gs}/{WIDTH}+i)*B_s1/{WIDTH} + n*B_s2 + b_ofst;
+       Alcl[i][j] = A[A_idx]; Blcl[i][j] = B[B_idx];
+       if (is_debug) {{
+         printf("copy A[%d] -> Alcl[%d][%d], B[%d] -> Blcl[%d][%d]\n", A_idx, i, j, B_idx, i, j);
+       }}
        barrier(CLK_LOCAL_MEM_FENCE);
+       if (is_debug) {{
+         float{WIDTH} tmp = Alcl[i][j];
+         printf("Alcl [%f %f %f %f]\n", tmp.x, tmp.y, tmp.z, tmp.w);
+       }}
        float{WIDTH} vecA, vecB;
-       float valB;
+       float valA;
        for (int k=0; k<{gs//WIDTH}; k++) {{
-         vecB = Blcl[i][k];
-         for (int w=0; w<{WIDTH}; w++) {{
-           vecA = Alcl[{WIDTH}*k+w][j];
-           switch(w) {{
-             case 0: valB = vecB.x; break;
-             case 1: valB = vecB.y; break;
-             case 2: valB = vecB.z; break;
-             case 3: valB = vecB.w; break;
-           }}
-           acc.x += vecA.x * valB;
-           acc.y += vecA.y * valB;
-           acc.z += vecA.z * valB;
-           acc.w += vecA.w * valB;
+         vecA = Alcl[i][k];
+         if (is_debug) {{
+           //printf("k=%d t=%d\n", k, t);
+           float{WIDTH} tmp = vecA;
+           printf("vecA [%f %f %f %f]\n", tmp.x, tmp.y, tmp.z, tmp.w);
          }}
+         for (int w=0; w<{WIDTH}; w++) {{
+           vecB = Blcl[{WIDTH}*k+w][j];
+           if (is_debug) {{
+             float{WIDTH} tmp = vecB;
+             //printf("vecB w=%d %f %f %f %f\n", w, tmp.x, tmp.y, tmp.z, tmp.w);
+           }}
+           switch(w) {{
+             case 0: valA = vecA.x; break;
+             case 1: valA = vecA.y; break;
+             case 2: valA = vecA.z; break;
+             case 3: valA = vecA.w; break;
+           }}
+           if (is_debug) {{
+             printf("(%f * %f) + ", valA, vecB.x);
+           }}
+           acc.x += vecB.x * valA;
+           acc.y += vecB.y * valA;
+           acc.z += vecB.z * valA;
+           acc.w += vecB.w * valA;
+         }}
+         if (is_debug) {{
+           printf("\n");
+         }}
+       }}
+       if (is_debug) {{
+         float{WIDTH} tmp = acc;
+         printf("!!! acc [%f %f %f %f]\n", tmp.x, tmp.y, tmp.z, tmp.w);
        }}
        barrier(CLK_LOCAL_MEM_FENCE);
      }}
-     C[bs*M*N+m*N+n] = acc;
+     if (is_debug) {{
+       printf("C idx=%d\n", bs*M*N+m*N/{WIDTH}+n);
+     }}
+     C[bs*M*N+m*N/{WIDTH}+n] = acc;
     }}""")
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
@@ -311,15 +337,17 @@ def matmul_op(op_info):
       args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
     args += [x.buffer for x in extra_inp.values()]
     args += [float32(x.constant_value) for x in extra_const_inp.values()]
-    _global, _local = (BS, M//WIDTH, N), (1, gs//WIDTH, gs)
-    print(f"global={_global} local={_local}")
+    #_global, _local = (BS, M//WIDTH, N), (1, gs//WIDTH, gs)
+    _global, _local = (BS, M, N//WIDTH), (1, gs, gs//WIDTH)
+    print(args)
     print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
-    e = op(_global, _local, *args, a.buffer, b.buffer, ret.buffer)
-    e.wait()
   else:
     raise ValueError(f"Invalid environ GEMM={GEMM}")
 
-  #e.wait()
+  if DEBUG:
+    print(f"global={_global} local={_local}")
+  e = op(_global, _local, *args, a.buffer, b.buffer, ret.buffer)
+  e.wait()
   kernelstat.log(op_info.operator)
   return ret
 
