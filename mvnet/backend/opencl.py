@@ -252,9 +252,9 @@ def matmul_op(op_info):
     _global, _local = (BS, M, N//WPT), (1, gs, gs//WPT)
   elif GEMM == 3:
     # wider data-types
-    gs = 2
+    gs = 64
     debug_grp, debug_thread = (0, 1), (0, 0)
-    WIDTH = 2
+    WIDTH = 16
     op = cl.build("matmul_op", rf"""
     __kernel void matmul_op(
       int BS, int M, int N, int K,
@@ -271,6 +271,7 @@ def matmul_op(op_info):
 
       __local float{WIDTH} Alcl[{gs}][{gs//WIDTH}], Blcl[{gs}][{gs//WIDTH}];
       float{WIDTH} acc = {{ {','.join('0.0f' for _ in range(WIDTH))} }};
+      float *p_acc = &acc;
 
       bool is_debug = {DEBUG}&&grpid1=={debug_grp[0]}&&grpid2=={debug_grp[1]}&&i=={debug_thread[0]}&&j=={debug_thread[1]};
       if (is_debug) {{
@@ -287,18 +288,19 @@ def matmul_op(op_info):
         if(is_debug) printf("Alcl [%f %f]\n", Alcl[i][j].s0, Alcl[i][j].s1);
         if(is_debug) printf("Blcl [%f %f]\n", Blcl[i][j].s0, Blcl[i][j].s1);
         float{WIDTH} vecA, vecB;
+        float *p_vecA, *p_vecB;
         float valA;
         for (int k=0; k<{gs//WIDTH}; k++) {{
           vecA = Alcl[i][k];
+          p_vecA = &vecA;
           for (int w=0; w<{WIDTH}; w++) {{
             vecB = Blcl[{WIDTH}*k+w][j];
+            p_vecB = &vecB;
             switch(w) {{
-              case 0: valA = vecA.s0; break;
-              case 1: valA = vecA.s1; break;
+              {' '.join(f'case {w_}: valA=p_vecA[{w_}]; break;' for w_ in range(WIDTH))}
             }}
             if(is_debug) printf("(%f * %f) + ", valA, vecB.x);
-            acc.s0 += vecB.s0 * valA;
-            acc.s1 += vecB.s1 * valA;
+            {' '.join(f'p_acc[{w_}]+=p_vecB[{w_}]*valA;' for w_ in range(WIDTH))}
           }}
           if(is_debug) printf("\n");
         }}
