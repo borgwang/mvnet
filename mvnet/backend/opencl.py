@@ -48,7 +48,8 @@ class CLContext:
   @lru_cache(maxsize=None)  # pylint: disable=method-cache-max-size-none
   def build(self, name, program):
     self.info["build_cnt"] += 1
-    if DEBUG: print(f"[DEBUG] program {name}: \n {program}")
+    if DEBUG and name == "matmul_op":
+      print(f"[DEBUG] program {name}: \n {program}")
     kernel = getattr(pyopencl.Program(self.ctx, program).build(), name)
     return lambda *args: kernel(self.queue, *args)
 
@@ -131,6 +132,7 @@ def matmul_op(op_info):
     extra_gl2lc = ''.join(f'idx=ptr/res_s{i}; ptr%=res_s{i}; ' + ''.join(f'{n}_i+=idx*{n}_s{i}; ' for n, arr in extra_inp.items() if i < arr.ndim) for i in range(ret.ndim))
 
   if GEMM == 0:
+    # naive
     op = cl.build("matmul_op", f"""
     __kernel void matmul_op(
       int BS, int M, int N, int K,
@@ -149,6 +151,7 @@ def matmul_op(op_info):
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
     _global, _local = (BS, M, N), None
   elif GEMM == 1:
+    # tiling
     op = cl.build("matmul_op", f"""
     __kernel void matmul_op(
      int BS, int M, int N, int K,
@@ -187,6 +190,7 @@ def matmul_op(op_info):
     args += [float32(x.constant_value) for x in extra_const_inp.values()]
     _global, _local = (BS, M, N), (1, gs, gs)
   elif GEMM == 2:
+    # more work per thread
     debug_grp = (0, 1)
     debug_worker = 0
     gs = 1
@@ -247,89 +251,66 @@ def matmul_op(op_info):
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
     _global, _local = (BS, M, N//WPT), (1, gs, gs//WPT)
   elif GEMM == 3:
-    gs = 64
-    debug_grp = (0, 0)
-    debug_thread = (0, 1) # asd
-    WIDTH = 16
+    # wider data-types
+    gs = 2
+    debug_grp, debug_thread = (0, 1), (0, 0)
+    WIDTH = 2
     op = cl.build("matmul_op", rf"""
     __kernel void matmul_op(
-     int BS, int M, int N, int K,
-     {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
-     int a_ofst, int b_ofst,
-     {extra_strides}
-     {''.join(f'__global const float *inp_{n}, ' for n in extra_inp)}
-     {''.join(f'const float {n}, ' for n in extra_const_inp)}
-     __global const float{WIDTH} *A, __global const float{WIDTH} *B, __global float{WIDTH} *C
+      int BS, int M, int N, int K,
+      {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
+      int a_ofst, int b_ofst,
+      {extra_strides}
+      {''.join(f'__global const float *inp_{n}, ' for n in extra_inp)}
+      {''.join(f'const float {n}, ' for n in extra_const_inp)}
+      __global const float{WIDTH} *A, __global const float{WIDTH} *B, __global float{WIDTH} *C
     ) {{
-     int grpid0=get_group_id(0), grpid1=get_group_id(1), grpid2=get_group_id(2);
-     int i=get_local_id(1), j=get_local_id(2);
-     int bs=get_global_id(0), m=grpid1*{gs//WIDTH}+i, n=grpid2*{gs}+j;
-     //printf("m,n=(%d,%d) i,j=(%d,%d)\n", m,n,i,j);
-     bool is_debug = {DEBUG}&&grpid1=={debug_grp[0]}&&grpid2=={debug_grp[1]}&&i=={debug_thread[0]}&&j=={debug_thread[1]};
+      int grpid1=get_group_id(1), grpid2=get_group_id(2);
+      int i=get_local_id(1), j=get_local_id(2);
+      int bs=get_global_id(0), m=grpid1*{gs}+i, n=grpid2*{gs//WIDTH}+j;
 
-     __local float{WIDTH} Alcl[{gs}][{gs//WIDTH}], Blcl[{gs}][{gs//WIDTH}];
-     float{WIDTH} acc = {{ {','.join('0.0f' for _ in range(WIDTH))} }};
+      __local float{WIDTH} Alcl[{gs}][{gs//WIDTH}], Blcl[{gs}][{gs//WIDTH}];
+      float{WIDTH} acc = {{ {','.join('0.0f' for _ in range(WIDTH))} }};
 
-     if (is_debug){{
-       //float{WIDTH} tmp = A[1];
-       //printf("tmp %f %f %f %f\n", tmp.x, tmp.y, tmp.z, tmp.w);
-     }}
+      bool is_debug = {DEBUG}&&grpid1=={debug_grp[0]}&&grpid2=={debug_grp[1]}&&i=={debug_thread[0]}&&j=={debug_thread[1]};
+      if (is_debug) {{
+        printf("grp=(%d, %d) lcl=(%d, %d) (m, n)=(%d, %d)\n", grpid1, grpid2, i, j, m, n);
+      }}
 
-     for (int t=0; t<K/{gs}; t++) {{
-       int A_idx = bs*A_s0 + m*A_s1/{WIDTH} + (t*{gs}/{WIDTH}+j)*A_s2 + a_ofst;
-       int B_idx = bs*B_s0 + (t*{gs}/{WIDTH}+i)*B_s1/{WIDTH} + n*B_s2 + b_ofst;
-       Alcl[i][j] = A[A_idx]; Blcl[i][j] = B[B_idx];
-       if (is_debug) {{
-         printf("copy A[%d] -> Alcl[%d][%d], B[%d] -> Blcl[%d][%d]\n", A_idx, i, j, B_idx, i, j);
-       }}
-       barrier(CLK_LOCAL_MEM_FENCE);
-       if (is_debug) {{
-         float{WIDTH} tmp = Alcl[i][j];
-         printf("Alcl [%f %f %f %f]\n", tmp.x, tmp.y, tmp.z, tmp.w);
-       }}
-       float{WIDTH} vecA, vecB;
-       float valA;
-       for (int k=0; k<{gs//WIDTH}; k++) {{
-         vecA = Alcl[i][k];
-         if (is_debug) {{
-           //printf("k=%d t=%d\n", k, t);
-           float{WIDTH} tmp = vecA;
-           printf("vecA [%f %f %f %f]\n", tmp.x, tmp.y, tmp.z, tmp.w);
-         }}
-         for (int w=0; w<{WIDTH}; w++) {{
-           vecB = Blcl[{WIDTH}*k+w][j];
-           if (is_debug) {{
-             float{WIDTH} tmp = vecB;
-             //printf("vecB w=%d %f %f %f %f\n", w, tmp.x, tmp.y, tmp.z, tmp.w);
-           }}
-           switch(w) {{
-             case 0: valA = vecA.x; break;
-             case 1: valA = vecA.y; break;
-             case 2: valA = vecA.z; break;
-             case 3: valA = vecA.w; break;
-           }}
-           if (is_debug) {{
-             printf("(%f * %f) + ", valA, vecB.x);
-           }}
-           acc.x += vecB.x * valA;
-           acc.y += vecB.y * valA;
-           acc.z += vecB.z * valA;
-           acc.w += vecB.w * valA;
-         }}
-         if (is_debug) {{
-           printf("\n");
-         }}
-       }}
-       if (is_debug) {{
-         float{WIDTH} tmp = acc;
-         printf("!!! acc [%f %f %f %f]\n", tmp.x, tmp.y, tmp.z, tmp.w);
-       }}
-       barrier(CLK_LOCAL_MEM_FENCE);
-     }}
-     if (is_debug) {{
-       printf("C idx=%d\n", bs*M*N+m*N/{WIDTH}+n);
-     }}
-     C[bs*M*N+m*N/{WIDTH}+n] = acc;
+      for (int t=0; t<K/{gs}; t++) {{
+        int A_idx = bs*A_s0/{WIDTH} + m*A_s1/{WIDTH} + (t*{gs}/{WIDTH}+j)*A_s2 + a_ofst;
+        int B_idx = bs*B_s0/{WIDTH} + (t*{gs}+i)*B_s1/{WIDTH} + n*B_s2 + b_ofst;
+
+        Alcl[i][j] = A[A_idx]; Blcl[i][j] = B[B_idx];
+        if(is_debug) printf("copy A[%d] -> Alcl[%d][%d], B[%d] -> Blcl[%d][%d]\n", A_idx, i, j, B_idx, i, j);
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if(is_debug) printf("Alcl [%f %f]\n", Alcl[i][j].s0, Alcl[i][j].s1);
+        if(is_debug) printf("Blcl [%f %f]\n", Blcl[i][j].s0, Blcl[i][j].s1);
+        float{WIDTH} vecA, vecB;
+        float valA;
+        for (int k=0; k<{gs//WIDTH}; k++) {{
+          vecA = Alcl[i][k];
+          for (int w=0; w<{WIDTH}; w++) {{
+            vecB = Blcl[{WIDTH}*k+w][j];
+            switch(w) {{
+              case 0: valA = vecA.s0; break;
+              case 1: valA = vecA.s1; break;
+            }}
+            if(is_debug) printf("(%f * %f) + ", valA, vecB.x);
+            acc.s0 += vecB.s0 * valA;
+            acc.s1 += vecB.s1 * valA;
+          }}
+          if(is_debug) printf("\n");
+        }}
+        if(is_debug) {{
+          printf("-------- acc [%f %f]\n", acc.s0, acc.s1);
+        }}
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }}
+      if(is_debug) {{
+        printf("bs=%d M=%d N=%d m=%d n=%d\n", bs, M, N, m, n);
+      }}
+      C[bs*M*N/{WIDTH} + m*N/{WIDTH} + n] = acc;
     }}""")
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
@@ -337,9 +318,7 @@ def matmul_op(op_info):
       args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
     args += [x.buffer for x in extra_inp.values()]
     args += [float32(x.constant_value) for x in extra_const_inp.values()]
-    #_global, _local = (BS, M//WIDTH, N), (1, gs//WIDTH, gs)
     _global, _local = (BS, M, N//WIDTH), (1, gs, gs//WIDTH)
-    print(args)
     print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
   else:
     raise ValueError(f"Invalid environ GEMM={GEMM}")

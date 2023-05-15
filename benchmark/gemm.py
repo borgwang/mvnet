@@ -2,12 +2,11 @@ import datetime
 import time
 
 import numpy as np
+import torch
 
 from mvnet.backend.opencl import CLArray
 from mvnet.env import DEBUG
 from mvnet.tensor import Tensor
-
-#import torch
 
 np.random.seed(31)
 
@@ -46,22 +45,25 @@ def check_array(myarr, nparr, atol=0, rtol=1e-3):
   assert np.allclose(myarr.numpy(), nparr, atol=atol, rtol=rtol)
 
 def benchmark_opencl():
-  a, b = 4096, 4096
-  #a = b = 16
+  a, b = 4, 4
   np_arr1, np_arr2 = rnd((a, b)), rnd((b, a))
   cl_arr1, cl_arr2 = CLArray(np_arr1), CLArray(np_arr2)
-  #mv_tensor1, mv_tensor2 = Tensor(np_arr1), Tensor(np_arr2)
+  #torch_arr1, torch_arr2 = torch.from_numpy(np_arr1.copy()).cuda(), torch.from_numpy(np_arr2.copy()).cuda()
+
   with Timer(f"numpy {np_arr1.shape} {np_arr2.shape}"):
     np_res = np_arr1 @ np_arr2
   with Timer(f"opencl {cl_arr1.shape} {cl_arr2.shape}"):
     cl_res = cl_arr1 @ cl_arr2
+  #with Timer(f"pytorch {cl_arr1.shape} {cl_arr2.shape}"):
+  #  torch_res = torch_arr1 @ torch_arr2
+
   if DEBUG:
     print("A"); print(np_arr1.astype(int))
     print("B"); print(np_arr2.astype(int))
-    print("result"); print(np_res.astype(int))
+    #print("result"); print(np_res.astype(int))
     #print("myresult"); print(cl_res.numpy().astype(int))
 
-  #check_array(cl_res, np_res, atol=1e-3)
+  check_array(cl_res, np_res, atol=1e-3)
   #with Timer(f"mvnet tensor {shape}"):
   #  mv_res = mv_tensor1 @ mv_tensor2
 
