@@ -191,8 +191,6 @@ def matmul_op(op_info):
     _global, _local = (BS, M, N), (1, gs, gs)
   elif GEMM == 2:
     # more work per thread
-    debug_grp = (0, 1)
-    debug_worker = 0
     gs = 1
     while gs <= 64 and M % gs == 0 and N % gs == 0 and K % gs == 0 and gs <= K and gs <= M and gs <= N:
       gs *= 2
@@ -217,9 +215,6 @@ def matmul_op(op_info):
      for (int p=0; p<{WPT}; p++) acc[p] = 0.0f;
      for (int t=0; t<K/{gs}; t++) {{
        for (int p=0; p<{WPT}; p++) {{
-         //if (grpid1=={debug_grp[0]} && grpid2=={debug_grp[1]} && i=={debug_worker}) {{
-           //printf("copy B[%d] to Blcl[%d][%d]\n", bs*B_s0 + (t*{gs}+i)*B_s1 + (n*{gs}+p*{RTS})*B_s2 + b_ofst, i, j+p*{RTS});
-         //}}
          Alcl[i][j+p*{RTS}] = A[bs*A_s0 + m*A_s1 + (t*{gs}+j+p*{RTS})*A_s2 + a_ofst];
          Blcl[i][j+p*{RTS}] = B[bs*B_s0 + (t*{gs}+i)*B_s1 + (n+p*{RTS})*B_s2 + b_ofst];
        }}
@@ -228,22 +223,11 @@ def matmul_op(op_info):
          float tmp = Alcl[i][k];
          for (int p=0; p<{WPT}; p++) {{
            acc[p] += tmp * Blcl[k][j+p*{RTS}];
-           //if (grpid1=={debug_grp[0]} && grpid2=={debug_grp[1]} && i=={debug_worker}) {{
-             //printf("multiply Alcl[%d][%d]=%f with Blcl[%d][%d]=%f and add to %d, curr_value=%f\n", i, k, tmp, k, j+p*{RTS},Blcl[k][j+p*{RTS}], p, acc[p]);
-           //}}
          }}
        }}
        barrier(CLK_LOCAL_MEM_FENCE);
      }}
-     //if (grpid1=={debug_grp[0]} && grpid2=={debug_grp[1]} && i=={debug_worker}) {{
-       //printf("bs*M*N=%d\n", bs*M*N);
-       //printf("m*N=%d\n", m*N);
-       //printf("n=%d\n", n);
-     //}}
      for (int p=0; p<{WPT}; p++) {{
-       //if (grpid1=={debug_grp[0]} && grpid2=={debug_grp[1]} && i=={debug_worker}){{
-         //printf("p%d=%f write to %d base=%d offset=%d\n", p, acc[p], bs*M*N+m*N+(n+p*{WPT}), bs*M*N+m*N, (n+p*{WPT}));
-       //}}
        C[bs*M*N+m*N+(n+p*{RTS})] = acc[p];
      }}
     }}""")
@@ -253,7 +237,7 @@ def matmul_op(op_info):
   elif GEMM == 3:
     # wider data-types
     gs = 64
-    debug_grp, debug_thread = (0, 1), (0, 0)
+    debug_grp, debug_thread = (0, 0), (0, 0)
     WIDTH = 16
     op = cl.build("matmul_op", rf"""
     __kernel void matmul_op(
@@ -304,14 +288,10 @@ def matmul_op(op_info):
           }}
           if(is_debug) printf("\n");
         }}
-        if(is_debug) {{
-          printf("-------- acc [%f %f]\n", acc.s0, acc.s1);
-        }}
+        if(is_debug) printf("-------- acc [%f %f]\n", acc.s0, acc.s1);
         barrier(CLK_LOCAL_MEM_FENCE);
       }}
-      if(is_debug) {{
-        printf("bs=%d M=%d N=%d m=%d n=%d\n", bs, M, N, m, n);
-      }}
+      if(is_debug) printf("bs=%d M=%d N=%d m=%d n=%d\n", bs, M, N, m, n);
       C[bs*M*N/{WIDTH} + m*N/{WIDTH} + n] = acc;
     }}""")
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
