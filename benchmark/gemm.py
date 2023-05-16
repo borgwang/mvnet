@@ -31,7 +31,6 @@ class Timer:
     self.__seconds = 0.0
 
 def rnd(shape):
-  #return np.random.normal(0, 1, shape).astype(np.float32)
   return np.random.randint(0, 10, shape).astype(np.float32)
 
 def check_array(myarr, nparr, atol=0, rtol=1e-3):
@@ -42,13 +41,24 @@ def check_array(myarr, nparr, atol=0, rtol=1e-3):
     print("result"); print(a.astype(int))
     print("ground truth"); print(b.astype(int))
     #print((a-b).astype(int))
-  assert np.allclose(myarr.numpy(), nparr, atol=atol, rtol=rtol)
+  assert np.allclose(myarr.numpy(), nparr, atol=atol, rtol=rtol), "check failed!!"
+  print("check pass!!")
 
 def benchmark_opencl():
+  transpose_a, transpose_b = 1, 1
+
+  #a, b = 64, 64
   a, b = 4096, 4096
   np_arr1, np_arr2 = rnd((a, b)), rnd((b, a))
   cl_arr1, cl_arr2 = CLArray(np_arr1), CLArray(np_arr2)
   #torch_arr1, torch_arr2 = torch.from_numpy(np_arr1.copy()).cuda(), torch.from_numpy(np_arr2.copy()).cuda()
+
+  if transpose_a:
+    np_arr1 = np_arr1.T
+    cl_arr1 = cl_arr1.T
+  if transpose_b:
+    np_arr2 = np_arr2.T
+    cl_arr2 = cl_arr2.T
 
   with Timer(f"numpy {np_arr1.shape} {np_arr2.shape}"):
     np_res = np_arr1 @ np_arr2
@@ -56,7 +66,6 @@ def benchmark_opencl():
     cl_res = cl_arr1 @ cl_arr2
   #with Timer(f"pytorch {cl_arr1.shape} {cl_arr2.shape}"):
   #  torch_res = torch_arr1 @ torch_arr2
-
   if DEBUG:
     print("A"); print(np_arr1.astype(int))
     print("B"); print(np_arr2.astype(int))

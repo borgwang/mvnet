@@ -57,10 +57,10 @@ def main(args):
   test_y = Tensor(test_y)
 
   net = SequentialNet(
+          Dense(512), ReLU(),
           Dense(256), ReLU(),
           Dense(128), ReLU(),
           Dense(64), ReLU(),
-          Dense(32), ReLU(),
           Dense(10)).to(args.device)
   optim = Adam(net.get_parameters(), lr=args.lr)
   loss_fn = SoftmaxCrossEntropyLoss()
