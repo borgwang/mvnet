@@ -43,6 +43,24 @@ def prepare_dataset(data_dir):
 #signal.signal(signal.SIGINT, handle_exit)
 #atexit.register(handle_exit)
 
+"""
+from mvnet.nn.initializer import XavierUniformInit, ZerosInit
+layer_params = []
+units = [784, 512, 256, 128, 64, 10]
+for i in range(len(units) - 1):
+  layer_params.append({
+    "w": XavierUniformInit()(shape=(units[i], units[i+1])).numpy(),
+    "b": XavierUniformInit()(shape=(1, units[i+1])).numpy()
+  })
+def numpy_forward(x):
+  for i, params in enumerate(layer_params):
+    x = x.dot(params["w"]) + params["b"]
+    if i != len(layer_params) - 1:
+      x = np.maximum(x, 0)
+  return x
+"""
+
+@profile
 def main(args):
   if args.seed >= 0:
     np.random.seed(args.seed)
@@ -77,6 +95,7 @@ def main(args):
       net.zero_grad()
       x, y = batch.inputs.to(args.device), batch.targets.to(args.device)
       pred = net.forward(x)
+      #pred = numpy_forward(x.numpy())
       if args.forward_only:
         continue
       loss = loss_fn(pred, y)
@@ -112,7 +131,7 @@ if __name__ == "__main__":
   parser.add_argument("--num_ep", default=10, type=int)
   parser.add_argument("--data_dir", default="./examples/mnist/data", type=str)
   parser.add_argument("--lr", default=1e-3, type=float)
-  parser.add_argument("--batch_size", default=128, type=int)
+  parser.add_argument("--batch_size", default=4096, type=int)
   parser.add_argument("--seed", default=0, type=int)
   parser.add_argument("--hidden_units", default="512,256,128,64", type=str)
 

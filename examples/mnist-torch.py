@@ -51,6 +51,7 @@ class Dense(nn.Module):
     x = F.log_softmax(x, dim=1)
     return x
 
+@profile
 def main():
   if args.seed >= 0:
     np.random.seed(args.seed)
@@ -94,7 +95,7 @@ if __name__ == "__main__":
   parser.add_argument("--num_ep", default=10, type=int)
   parser.add_argument("--data_dir", type=str, default="./examples/mnist/data")
   parser.add_argument("--lr", default=1e-3, type=float)
-  parser.add_argument("--batch_size", default=128, type=int)
+  parser.add_argument("--batch_size", default=4096, type=int)
   parser.add_argument("--seed", default=31, type=int)
   parser.add_argument("--hidden_units", default="512,256,128,64", type=str)
 
