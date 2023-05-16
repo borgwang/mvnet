@@ -8,8 +8,8 @@ import pyopencl.clrandom
 
 from mvnet.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps
 from mvnet.dtype import float32, int32
-from mvnet.env import (DEBUG, GRAPH, LAZY, OPT_CONSTANT_FOLDING, OPT_ELEMWISE_FUSION, OPT_ELEMWISE_PROCESSING_FUSION,
-                       OPT_VIEWOP_PRUNING)
+from mvnet.env import (DEBUG, GEMM, GRAPH, LAZY, OPT_CONSTANT_FOLDING, OPT_ELEMWISE_FUSION,
+                       OPT_ELEMWISE_PROCESSING_FUSION, OPT_VIEWOP_PRUNING)
 from mvnet.jit.graph import GraphOptimizer
 from mvnet.utils.array import broadcast, calculate_contiguity, calculate_slices
 from mvnet.utils.math import prod
@@ -26,9 +26,6 @@ ELEMWISE_MAPPING = {
 REDUCE_AGG_FN = {ReduceOps.SUM: "A+B", ReduceOps.MAX: "max(A,B)"}
 REDUCE_PAD_VAL = {ReduceOps.SUM: "0.0f", ReduceOps.MAX: "-INFINITY"}
 
-import os
-
-GEMM = int(os.getenv("GEMM", "2"))
 
 class CLContext:
   def __init__(self):
