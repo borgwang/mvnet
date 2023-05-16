@@ -47,7 +47,7 @@ def main(args):
   if args.seed >= 0:
     np.random.seed(args.seed)
 
-  train_set, valid_set, test_set = prepare_dataset(args.data_dir)
+  train_set, _, test_set = prepare_dataset(args.data_dir)
   train_x, train_y = train_set
   test_x, test_y = test_set
   train_y = get_one_hot(train_y, 10)
@@ -56,12 +56,15 @@ def main(args):
   test_x = Tensor(test_x).to(args.device)
   test_y = Tensor(test_y)
 
-  net = SequentialNet(
-          Dense(512), ReLU(),
-          Dense(256), ReLU(),
-          Dense(128), ReLU(),
-          Dense(64), ReLU(),
-          Dense(10)).to(args.device)
+  hidden_units = [int(i) for i in args.hidden_units.split(",")]
+  units = [784] + hidden_units
+  layers = []
+  for i in range(len(units) - 1):
+    layers.append(Dense(units[i], units[i+1]))
+    layers.append(ReLU())
+  layers.append(Dense(units[-1], 10))
+
+  net = SequentialNet(*layers).to(args.device)
   optim = Adam(net.get_parameters(), lr=args.lr)
   loss_fn = SoftmaxCrossEntropyLoss()
 
@@ -74,6 +77,8 @@ def main(args):
       net.zero_grad()
       x, y = batch.inputs.to(args.device), batch.targets.to(args.device)
       pred = net.forward(x)
+      if args.forward_only:
+        continue
       loss = loss_fn(pred, y)
       if args.profile_forward:
         if LAZY: print(loss.numpy())
@@ -109,7 +114,9 @@ if __name__ == "__main__":
   parser.add_argument("--lr", default=1e-3, type=float)
   parser.add_argument("--batch_size", default=128, type=int)
   parser.add_argument("--seed", default=0, type=int)
+  parser.add_argument("--hidden_units", default="512,256,128,64", type=str)
 
+  parser.add_argument("--forward_only", default=0, type=int)
   parser.add_argument("--profile_forward", default=0, type=int)
   parser.add_argument("--profile_backward", default=0, type=int)
   parser.add_argument("--eval", default=0, type=int)
