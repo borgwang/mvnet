@@ -45,20 +45,12 @@ def check_array(myarr, nparr, atol=0, rtol=1e-3):
   print("check pass!!")
 
 def benchmark_opencl():
-  transpose_a, transpose_b = 1, 1
-
-  #a, b = 64, 64
-  a, b = 4096, 4096
-  np_arr1, np_arr2 = rnd((a, b)), rnd((b, a))
+  BS = 12
+  m, k, n  = 8, 8, 8
+  m, k, n = 4096, 4096, 4096
+  np_arr1, np_arr2 = rnd((BS, m, k)), rnd((BS, k, n))
   cl_arr1, cl_arr2 = CLArray(np_arr1), CLArray(np_arr2)
   #torch_arr1, torch_arr2 = torch.from_numpy(np_arr1.copy()).cuda(), torch.from_numpy(np_arr2.copy()).cuda()
-
-  if transpose_a:
-    np_arr1 = np_arr1.T
-    cl_arr1 = cl_arr1.T
-  if transpose_b:
-    np_arr2 = np_arr2.T
-    cl_arr2 = cl_arr2.T
 
   with Timer(f"numpy {np_arr1.shape} {np_arr2.shape}"):
     np_res = np_arr1 @ np_arr2
@@ -69,6 +61,7 @@ def benchmark_opencl():
   if DEBUG:
     print("A"); print(np_arr1.astype(int))
     print("B"); print(np_arr2.astype(int))
+    print("B.T"); print(np_arr2.transpose(0, 2, 1).astype(int))
   check_array(cl_res, np_res, atol=1e-3)
 
 benchmark_opencl()
