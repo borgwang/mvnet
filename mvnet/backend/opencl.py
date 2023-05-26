@@ -8,7 +8,7 @@ import pyopencl.clrandom
 
 from mvnet.backend.base import Array, ElemwiseOps, ProcessingOps, ReduceOps, ViewOps
 from mvnet.dtype import float32, int32
-from mvnet.env import (DEBUG, GEMM, GRAPH, LAZY, OPT_CONSTANT_FOLDING, OPT_ELEMWISE_FUSION,
+from mvnet.env import (CLWAIT, DEBUG, GEMM, GRAPH, LAZY, OPT_CONSTANT_FOLDING, OPT_ELEMWISE_FUSION,
                        OPT_ELEMWISE_PROCESSING_FUSION, OPT_VIEWOP_PRUNING)
 from mvnet.jit.graph import GraphOptimizer
 from mvnet.utils.array import broadcast, calculate_contiguity, calculate_slices
@@ -105,7 +105,8 @@ def elemwise_op(op_info):
   args += [int32(x.offset) for x in inp.values()]
   args += [x.buffer for x in inp.values()]
   args += [float32(x.constant_value) for x in const_inp.values()]
-  op((prod(shape),), None, *args, ret.buffer)
+  e = op((prod(shape),), None, *args, ret.buffer)
+  if CLWAIT: e.wait()
   kernelstat.log(op_info.operator)
   return ret
 
@@ -243,7 +244,7 @@ def matmul_op(op_info):
     if not a.c_contiguous: a = a.contiguous(eager=True)
     if not b.c_contiguous: b = b.contiguous(eager=True)
     WIDTH = 1
-    while N%(WIDTH*2)==0 and K%(WIDTH*2)==0 and WIDTH*2<=N and WIDTH*2<=16: WIDTH *= 2
+    while M%(WIDTH*2)==0 and N%(WIDTH*2)==0 and K%(WIDTH*2)==0 and WIDTH*2<=N and WIDTH*2<=16: WIDTH *= 2
     width = f"{WIDTH}" if WIDTH > 1 else ""
     gs = 1
     while gs*gs//WIDTH<max_work_groups and gs*gs//WIDTH*2*4<max_local_mem and M%gs==0 and N%gs==0 and K%gs==0 and gs<=K and gs<=M and gs<=N: gs *= 2
@@ -370,7 +371,8 @@ def matmul_op(op_info):
     raise ValueError(f"Invalid environ GEMM={GEMM}")
 
   if DEBUG: print(f"global={_global} local={_local}")
-  op(_global, _local, *args, a.buffer, b.buffer, ret.buffer)
+  e = op(_global, _local, *args, a.buffer, b.buffer, ret.buffer)
+  if CLWAIT: e.wait()
   kernelstat.log(op_info.operator)
   return ret
 
@@ -434,7 +436,8 @@ def reduce_op(op_info):
   """)
   local_mem = cl.alloc_local(x.dtype().itemsize * grp_size)
   local_size = tuple(grp_size if i == axis else 1 for i in range(ndim))
-  op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
+  e = op(global_size, local_size, int32(size), int32(x.offset), x.buffer, local_mem, ret.buffer)
+  if CLWAIT: e.wait()
   if DEBUG: print(f"[DEBUG] x_shp: {x_shp} ret_shape: {ret_shape} grp_size: {grp_size} n_grps: {n_grps} size: {size} global_size: {global_size} local_size: {local_size} axis={axis} ndim={ndim} offset={offset}")
   kernelstat.log(op_info.operator)
   if n_grps > 1:

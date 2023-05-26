@@ -192,6 +192,13 @@ def test_matmul_op():
   arr2, nparr2 = arr2.T, nparr2.T
   check_array(arr1@arr2, nparr1@nparr2, rtol=1e-3)
 
+  s1, s2 = (4, 5, 1), (3, 1, 5)
+  nparr1, nparr2 = rnd(s1), rnd(s2)
+  arr1, arr2 = CLArray(nparr1), CLArray(nparr2)
+  arr1, arr2 = arr1.permute((2, 0, 1)), arr2.permute((1, 2, 0))
+  nparr1, nparr2 = nparr1.transpose(2, 0, 1), nparr2.transpose(1, 2, 0)
+  check_array(arr1@arr2, nparr1@nparr2, rtol=1e-3)
+
   s1, s2 = (4, 5), (1, 3)
   nparr1, nparr2 = rnd(s1), rnd(s2)
   arr1, arr2 = CLArray(nparr1), CLArray(nparr2)

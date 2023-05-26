@@ -14,7 +14,7 @@ from mvnet.env import BACKEND, LAZY
 from mvnet.nn.layers import Dense, ReLU
 from mvnet.nn.loss import SoftmaxCrossEntropyLoss
 from mvnet.nn.net import SequentialNet
-from mvnet.nn.optimizer import SGD, Adam
+from mvnet.nn.optimizer import Adam
 from mvnet.tensor import Tensor
 from mvnet.utils.misc import kernelstat
 
@@ -34,19 +34,11 @@ def prepare_dataset(data_dir):
   with gzip.open(save_path, "rb") as f:
     return pickle.load(f, encoding="latin1")
 
-#import line_profiler, signal, sys, atexit
-#profile = line_profiler.LineProfiler()
-#def handle_exit(*args):
-#    profile.print_stats()
-#    sys.exit()
-#signal.signal(signal.SIGTERM, handle_exit)
-#signal.signal(signal.SIGINT, handle_exit)
-#atexit.register(handle_exit)
-
 """
 from mvnet.nn.initializer import XavierUniformInit, ZerosInit
 layer_params = []
-units = [784, 512, 256, 128, 64, 10]
+hidden_units = [int(i) for i in args.hidden_units.split(",")]
+units = [784] + hidden_units + [10]
 for i in range(len(units) - 1):
   layer_params.append({
     "w": XavierUniformInit()(shape=(units[i], units[i+1])).numpy(),
@@ -60,7 +52,6 @@ def numpy_forward(x):
   return x
 """
 
-@profile
 def main(args):
   if args.seed >= 0:
     np.random.seed(args.seed)

@@ -51,7 +51,6 @@ class Dense(nn.Module):
     x = F.log_softmax(x, dim=1)
     return x
 
-@profile
 def main():
   if args.seed >= 0:
     np.random.seed(args.seed)
