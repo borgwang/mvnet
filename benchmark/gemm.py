@@ -45,9 +45,10 @@ def check_array(myarr, nparr, atol=0, rtol=1e-3):
   print("check pass!!")
 
 def benchmark_opencl():
-  BS = 12
-  m, k, n  = 8, 8, 8
-  m, k, n = 4096, 4096, 4096
+  BS = 1
+  #m=k=n=5120
+  #m=k=n=512
+  m=k=n=512
   np_arr1, np_arr2 = rnd((BS, m, k)), rnd((BS, k, n))
   cl_arr1, cl_arr2 = CLArray(np_arr1), CLArray(np_arr2)
   #torch_arr1, torch_arr2 = torch.from_numpy(np_arr1.copy()).cuda(), torch.from_numpy(np_arr2.copy()).cuda()

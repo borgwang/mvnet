@@ -45,13 +45,13 @@ with speedscope.track("/tmp/speedscope.json"):
 """
 
 def benchmark_matmul():
-  for e in range(10, 13):
+  for e in range(8, 13):
     M = K = N = 2**e
     np_arr1, np_arr2 = rnd((M, K)), rnd((K, N))
     cl_arr1, cl_arr2 = CLArray(np_arr1), CLArray(np_arr2)
     torch_arr1, torch_arr2 = torch.from_numpy(np_arr1.copy()).cuda(), torch.from_numpy(np_arr2.copy()).cuda()
 
-    n_warmup, n_measure = 10, 20
+    n_warmup, n_measure = 5, 20
     flops = M*N*K*2*n_measure
 
     cl_fn = lambda: cl_arr1 @ cl_arr2
