@@ -45,7 +45,7 @@ with speedscope.track("/tmp/speedscope.json"):
 """
 
 def benchmark_matmul():
-  for e in range(8, 13):
+  for e in range(10, 13):
     M = K = N = 2**e
     np_arr1, np_arr2 = rnd((M, K)), rnd((K, N))
     cl_arr1, cl_arr2 = CLArray(np_arr1), CLArray(np_arr2)

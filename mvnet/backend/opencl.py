@@ -304,53 +304,48 @@ def matmul_op(op_info):
     if not b.c_contiguous: b = b.contiguous(eager=True)
     if not a.c_contiguous: a = a.contiguous(eager=True)
 
-    WIDTH = 1
-    while M%(WIDTH*2)==0 and N%(WIDTH*2)==0 and K%(WIDTH*2)==0 and WIDTH*2<=N and WIDTH*2<=16: WIDTH *= 2
-    X = f"{WIDTH}" if WIDTH > 1 else ""
+    W = 1
+    while M%(W*2)==0 and N%(W*2)==0 and K%(W*2)==0 and W*2<=N and W*2<=16: W *= 2
+    X = f"{W}" if W > 1 else ""
     gs = 1
-    while gs*gs//WIDTH<max_work_groups and gs*gs*2*4<max_local_mem and M%gs==0 and N%gs==0 and K%gs==0 and gs<=M and gs<=N and gs<=K: gs *= 2
+    while gs*gs//W<max_work_groups and gs*gs*2*4<max_local_mem and M%gs==0 and N%gs==0 and K%gs==0 and gs<=M and gs<=N and gs<=K: gs *= 2
     gs //= 2
-
-    HEI = 2 if gs != 1 else 1
+    H = 2 if gs != 1 else 1
 
     op = cl.build("matmul_op", rf"""
     __kernel void matmul_op(
       int BS, int M, int N, int K,
-      {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
-      int a_ofst, int b_ofst,
+      {''.join(f'uint A_s{i}, uint B_s{i}, ' for i in range(3))}
+      uint a_ofst, uint b_ofst,
       {extra_strides}
       {''.join(f'__global const float *inp_{n}, ' for n in extra_inp)}
       {''.join(f'const float {n}, ' for n in extra_const_inp)}
       __global const float{X} *A, __global const float{X} *B, __global float{X} *C
     ) {{
-      int grpid1=get_group_id(1), grpid2=get_group_id(2);
-      int i=get_local_id(1), j=get_local_id(2);
-      int bs=get_global_id(0);
-      __local float{X} Alcl[{gs}][{gs//WIDTH}], Blcl[{gs}][{gs//WIDTH}];
-      float{X} acc[{HEI}] = {{{','.join(f'(float{X})({",".join("0.0f" for _ in range(WIDTH))})' for _ in range(HEI))}}};
+      uint grpid1=get_group_id(1), grpid2=get_group_id(2);
+      uint bs=get_global_id(0), i=get_local_id(1), j=get_local_id(2);
 
-      for (int t=0; t<K/{gs}; t++) {{  // loop over groups
-        for (int h=0; h<{HEI}; h++) {{
-          Alcl[i*{HEI}+h][j] = A[bs*A_s0/{WIDTH} + (grpid1*{gs}+(i*{HEI}+h))*A_s1/{WIDTH} + (t*{gs//WIDTH}+j)*A_s2 + a_ofst];
-          Blcl[i*{HEI}+h][j] = B[bs*B_s0/{WIDTH} + (grpid2*{gs}+(i*{HEI}+h))*B_s1/{WIDTH} + (t*{gs//WIDTH}+j)*B_s2 + b_ofst];
+      float{X} acc[{H}] = {{{','.join(f'(float{X})(0)' for _ in range(H))}}};
+      __local float{X} Alcl[{gs}][{gs//W}], Blcl[{gs}][{gs//W}];
+      for (uint t=0; t<K/{gs}; t++) {{  // loop over groups
+        for (uint h=0; h<{H}; h++) {{
+          Alcl[i*{H}+h][j] = A[bs*A_s0/{W} + (grpid1*{gs}+(i*{H}+h))*A_s1/{W} + (t*{gs//W}+j)*A_s2 + a_ofst];
+          Blcl[i*{H}+h][j] = B[bs*B_s0/{W} + (grpid2*{gs}+(i*{H}+h))*B_s1/{W} + (t*{gs//W}+j)*B_s2 + b_ofst];
         }}
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        for (int k=0; k<{gs//WIDTH}; k++) {{   // k: loop over vecs inside a group
-          for (int w=0; w<{WIDTH}; w++) {{  // w: loop over elems inside a vec
-            for (int h=0; h<{HEI}; h++) {{  // h: loop over WPT
-              float{X} vecT = Alcl[i*{HEI}+h][k] * Blcl[j*{WIDTH}+w][k];
-              float *p_vecT = &vecT;
-              ((float*)&acc[h])[w] += {'+'.join(f'p_vecT[{w_}]' for w_ in range(WIDTH))};
+        float{X} vecT; float *p_vecT;
+        for (uint k=0; k<{gs//W}; k++) {{   // k: loop over vecs inside a group
+          for (uint w=0; w<{W}; w++) {{  // w: loop over elems inside a vec
+            for (uint h=0; h<{H}; h++) {{  // h: loop over WPT
+              float{X} vecT = Alcl[i*{H}+h][k] * Blcl[j*{W}+w][k]; float *p_vecT = &vecT;
+              ((float*)&acc[h])[w] += {'+'.join(f'p_vecT[{w_}]' for w_ in range(W))};
             }}
           }}
         }}
         barrier(CLK_LOCAL_MEM_FENCE);
       }}
-
-      for (int h=0; h<{HEI}; h++) {{
-        C[bs*M*N/{WIDTH} + (grpid1*{gs}+i*{HEI}+h)*N/{WIDTH} + (grpid2*{gs//WIDTH}+j)] = acc[h];
-      }}
+      for (uint h=0; h<{H}; h++) C[bs*M*N/{W} + (grpid1*{gs}+i*{H}+h)*N/{W} + (grpid2*{gs//W}+j)] = acc[h];
     }}""")
     strides = [s for ss in zip(a.strides, b.strides) for s in ss]
     args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
@@ -358,10 +353,9 @@ def matmul_op(op_info):
       args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
     args += [x.buffer for x in extra_inp.values()]
     args += [float32(x.constant_value) for x in extra_const_inp.values()]
-    _global, _local = (BS, M//HEI, N//WIDTH), (1, gs//HEI, gs//WIDTH)
+    _global, _local = (BS, M//H, N//W), (1, gs//H, gs//W)
     if DEBUG:
       print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
-      print(f"gs={gs} WIDTH={WIDTH}")
   elif GEMM == 5:
     # wider data-types
     gs = 64
