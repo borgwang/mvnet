@@ -1,27 +1,11 @@
 #!/usr/bin/env python3
 import numpy as np
 import torch
-from utils import Timer
+from utils import FS, Timer
 
 from mvnet.backend.opencl import CLArray, cl
 from mvnet.env import BACKEND, LAZY
 
-FS = {
-  "UNDERLINE": "\033[4m",
-  "BLUE": "\033[94m",
-  "HIGHLIGHT": "\x1b[6;30;42m",  # highlight green
-  "HIGHLIGHT_RED": "\x1b[6;30;41m",  # highlight red
-  "DARKGREY": "\033[90m",
-  "LIGHTGREY": "\033[37m",
-  "RED": "\033[91m",
-  "YELLOW": "\033[93m",
-  "CYAN": "\033[96m",
-  "GREEN": "\033[92m",
-  "BOLD": "\033[1m",
-  "WHITE": "\033[1;37m",
-  "STRIKETHROUGH": "\033[9m",
-  "ENDC": "\033[0m"
-}
 
 def rnd(shape):
   #return np.random.randint(0, 10, shape).astype(np.float32)
