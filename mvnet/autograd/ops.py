@@ -125,12 +125,6 @@ class Ops:
   def log(arr):
     return arr.log(), lambda g: g / arr
 
-  #@staticmethod
-  #@autograd_ops
-  #def relu(arr):
-  #  mask = arr > 0
-  #  return mask * arr, lambda g: mask * g
-
   @staticmethod
   @autograd_ops
   def relu(arr):

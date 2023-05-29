@@ -4,6 +4,8 @@ DEBUG = int(os.getenv("DEBUG", "0"))
 GRAPH = int(os.getenv("GRAPH", "0"))
 LAZY = int(os.getenv("LAZY", "0"))
 BACKEND = os.getenv("BACKEND", "opencl")
+CLWAIT = int(os.getenv("CLWAIT", "0"))
+GEMM = int(os.getenv("GEMM", "3"))
 
 OPT_CONSTANT_FOLDING = int(os.getenv("OPT_CONSTANT_FOLDING", "0"))
 OPT_ELEMWISE_FUSION = int(os.getenv("OPT_ELEMWISE_FUSION", "0"))

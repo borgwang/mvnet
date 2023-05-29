@@ -98,3 +98,4 @@ examples/mnist/data/*
 examples/mnist/compare_tf.py
 examples/test.py
 *.png
+*.ptx
