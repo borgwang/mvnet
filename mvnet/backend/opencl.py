@@ -45,6 +45,8 @@ class CLContext:
   @lru_cache(maxsize=None)  # pylint: disable=method-cache-max-size-none
   def build(self, name, src):
     self.info["build_cnt"] += 1
+    if DEBUG and name == "matmul_op":
+      print(f"[DEBUG] src {name}: \n {src}")
     program = pyopencl.Program(self.ctx, src).build(options=[
       #"-cl-nv-verbose"  # use with PYOPENCL_COMPILER_OUTPUT=1
       #"-cl-opt-disable",
@@ -306,11 +308,17 @@ def matmul_op(op_info):
 
     W = 1
     while M%(W*2)==0 and N%(W*2)==0 and K%(W*2)==0 and W*2<=N and W*2<=16: W *= 2
-    X = f"{W}" if W > 1 else ""
+    X = str(W) if W > 1 else ""
     gs = 1
     while gs*gs//W<max_work_groups and gs*gs*2*4<max_local_mem and M%gs==0 and N%gs==0 and K%gs==0 and gs<=M and gs<=N and gs<=K: gs *= 2
     gs //= 2
     H = 2 if gs != 1 else 1
+
+    # // slightly faster
+    # //float{X} a=Alcl[i*{H}+h][k], b=Blcl[j*{W}+w][k];
+    # //{"float v=a*b" if W==0 else ""} {"float v=dot(a,b)" if W<=4 else ""}
+    # //{"float v=" + "+".join(f"dot((float4)a.s{i},(float4)b.s{i})" for _ ,i in zip(range(W//4), ("0123","4567","89AB","CDEF"))) + ";" if W > 4 else ""}
+    # //((float*)&acc[h])[w] += v;
 
     op = cl.build("matmul_op", rf"""
     __kernel void matmul_op(
@@ -338,7 +346,8 @@ def matmul_op(op_info):
         for (uint k=0; k<{gs//W}; k++) {{   // k: loop over vecs inside a group
           for (uint w=0; w<{W}; w++) {{  // w: loop over elems inside a vec
             for (uint h=0; h<{H}; h++) {{  // h: loop over WPT
-              float{X} vecT = Alcl[i*{H}+h][k] * Blcl[j*{W}+w][k]; float *p_vecT = &vecT;
+              float{X} vecT = Alcl[i*{H}+h][k] * Blcl[j*{W}+w][k];
+              float *p_vecT = &vecT;
               ((float*)&acc[h])[w] += {'+'.join(f'p_vecT[{w_}]' for w_ in range(W))};
             }}
           }}
@@ -356,74 +365,6 @@ def matmul_op(op_info):
     _global, _local = (BS, M//H, N//W), (1, gs//H, gs//W)
     if DEBUG:
       print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
-  elif GEMM == 5:
-    # wider data-types
-    gs = 64
-    debug_grp, debug_thread = (0, 0), (0, 0)
-    WIDTH = 16
-    op = cl.build("matmul_op", rf"""
-    __kernel void matmul_op(
-      int BS, int M, int N, int K,
-      {''.join(f'int A_s{i}, int B_s{i}, ' for i in range(3))}
-      int a_ofst, int b_ofst,
-      {extra_strides}
-      {''.join(f'__global const float *inp_{n}, ' for n in extra_inp)}
-      {''.join(f'const float {n}, ' for n in extra_const_inp)}
-      __global const float{WIDTH} *A, __global const float{WIDTH} *B, __global float{WIDTH} *C
-    ) {{
-      int grpid1=get_group_id(1), grpid2=get_group_id(2);
-      int i=get_local_id(1), j=get_local_id(2);
-      int bs=get_global_id(0), m=grpid1*{gs}+i, n=grpid2*{gs//WIDTH}+j;
-      __local float{WIDTH} Alcl[{gs}][{gs//WIDTH}], Blcl[{gs}][{gs//WIDTH}];
-      float{WIDTH} acc = {{{','.join('0.0f' for _ in range(WIDTH))}}};
-      float *p_acc = &acc;
-
-      bool is_debug = {DEBUG}&&grpid1=={debug_grp[0]}&&grpid2=={debug_grp[1]}&&i=={debug_thread[0]}&&j=={debug_thread[1]};
-      if (is_debug) {{
-        printf("grp=(%d, %d) lcl=(%d, %d) (m, n)=(%d, %d)\n", grpid1, grpid2, i, j, m, n);
-      }}
-
-      for (int t=0; t<K/{gs}; t++) {{
-        int A_idx = bs*A_s0/{WIDTH} + m*A_s1/{WIDTH} + (t*{gs}/{WIDTH}+j)*A_s2 + a_ofst;
-        int B_idx = bs*B_s0/{WIDTH} + (t*{gs}+i)*B_s1/{WIDTH} + n*B_s2 + b_ofst;
-
-        Alcl[i][j] = A[A_idx]; Blcl[i][j] = B[B_idx];
-        if(is_debug) printf("copy A[%d] -> Alcl[%d][%d], B[%d] -> Blcl[%d][%d]\n", A_idx, i, j, B_idx, i, j);
-        barrier(CLK_LOCAL_MEM_FENCE);
-        if(is_debug) printf("Alcl [%f %f]\n", Alcl[i][j].s0, Alcl[i][j].s1);
-        if(is_debug) printf("Blcl [%f %f]\n", Blcl[i][j].s0, Blcl[i][j].s1);
-        float{WIDTH} vecA, vecB;
-        float *p_vecA, *p_vecB;
-        float valA;
-        for (int k=0; k<{gs//WIDTH}; k++) {{
-          vecA = Alcl[i][k];
-          p_vecA = &vecA;
-          for (int w=0; w<{WIDTH}; w++) {{
-            vecB = Blcl[{WIDTH}*k+w][j];
-            p_vecB = &vecB;
-            switch(w) {{
-              {' '.join(f'case {w_}: valA=p_vecA[{w_}]; break;' for w_ in range(WIDTH))}
-            }}
-            if(is_debug) printf("(%f * %f) + ", valA, vecB.x);
-            {' '.join(f'p_acc[{w_}]+=p_vecB[{w_}]*valA;' for w_ in range(WIDTH))}
-          }}
-          if(is_debug) printf("\n");
-        }}
-        if(is_debug) printf("-------- acc [%f %f]\n", acc.s0, acc.s1);
-        barrier(CLK_LOCAL_MEM_FENCE);
-
-      }}
-      if(is_debug) printf("bs=%d M=%d N=%d m=%d n=%d\n", bs, M, N, m, n);
-      C[bs*M*N/{WIDTH} + m*N/{WIDTH} + n] = acc;
-    }}""")
-    strides = [s for ss in zip(a.strides, b.strides) for s in ss]
-    args = [int32(x) for x in [BS, M, N, K] + strides + [a.offset, b.offset]]
-    if extra_inp:
-      args += [int32(s) for x in list(extra_inp.values()) + [ret] for s in x.strides]
-    args += [x.buffer for x in extra_inp.values()]
-    args += [float32(x.constant_value) for x in extra_const_inp.values()]
-    _global, _local = (BS, M, N//WIDTH), (1, gs, gs//WIDTH)
-    print(f"total_threads={prod(_global)} threads_per_group={prod(_local)} n_groups={prod(_global)//prod(_local)}")
   else:
     raise ValueError(f"Invalid environ GEMM={GEMM}")
 

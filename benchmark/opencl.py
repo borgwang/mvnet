@@ -50,6 +50,16 @@ def benchmark_matmul():
     np_arr1, np_arr2 = rnd((M, K)), rnd((K, N))
     cl_arr1, cl_arr2 = CLArray(np_arr1), CLArray(np_arr2)
     torch_arr1, torch_arr2 = torch.from_numpy(np_arr1.copy()).cuda(), torch.from_numpy(np_arr2.copy()).cuda()
+    buffer = np.zeros((M, N), np.float32)
+    import pyopencl
+    import pyopencl_blas
+    clblas_arr1 = pyopencl.array.to_device(cl.queue, np_arr1)
+    clblas_arr2 = pyopencl.array.to_device(cl.queue, np_arr2)
+
+    def clblas_fn():
+      clblas_res = pyopencl.array.to_device(cl.queue, buffer)
+      pyopencl_blas.gemm(cl.queue, clblas_arr1, clblas_arr2, clblas_res)
+      return clblas_res
 
     n_warmup, n_measure = 5, 20
     flops = M*N*K*2*n_measure
@@ -70,11 +80,18 @@ def benchmark_matmul():
       for _ in range(n_measure): torch_fn()
       torch.cuda.synchronize()
 
+    for _ in range(n_warmup): clblas_fn()
+    cl.queue.finish()
+    with Timer("clblas") as t3:
+      for _ in range(n_measure): clblas_fn()
+      cl.queue.finish()
+
     factor = t2.ms/t1.ms
     color = FS["GREEN"] if t1.ms < t2.ms else FS["RED"]
     print(f"MatmulOp({M}x{K})\t"
-          f"cl_backend: {t1.ms:.2f}ms, {1e-9*flops/t1.ms:.2f}TFLOPS\t"
-          f"pytorch: {t2.ms:.2f}ms, {1e-9*flops/t2.ms:.2f}TFLOPS\t"
+          f"mycl: {t1.ms:.2f}ms, {1e-9*flops/t1.ms:.2f}TFLOPS\t"
+          f"cuBLAS: {t2.ms:.2f}ms, {1e-9*flops/t2.ms:.2f}TFLOPS\t"
+          f"clBLAS: {t3.ms:.2f}ms, {1e-9*flops/t3.ms:.2f}TFLOPS\t"
           f"factor: {color}{factor:.3f}{FS['ENDC']}")
   print("-"*50)
 
