@@ -314,12 +314,6 @@ def matmul_op(op_info):
     gs //= 2
     H = 2 if gs != 1 else 1
 
-    # // slightly faster
-    # //float{X} a=Alcl[i*{H}+h][k], b=Blcl[j*{W}+w][k];
-    # //{"float v=a*b" if W==0 else ""} {"float v=dot(a,b)" if W<=4 else ""}
-    # //{"float v=" + "+".join(f"dot((float4)a.s{i},(float4)b.s{i})" for _ ,i in zip(range(W//4), ("0123","4567","89AB","CDEF"))) + ";" if W > 4 else ""}
-    # //((float*)&acc[h])[w] += v;
-
     op = cl.build("matmul_op", rf"""
     __kernel void matmul_op(
       int BS, int M, int N, int K,
@@ -342,13 +336,17 @@ def matmul_op(op_info):
         }}
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        float{X} vecT; float *p_vecT;
         for (uint k=0; k<{gs//W}; k++) {{   // k: loop over vecs inside a group
           for (uint w=0; w<{W}; w++) {{  // w: loop over elems inside a vec
             for (uint h=0; h<{H}; h++) {{  // h: loop over WPT
-              float{X} vecT = Alcl[i*{H}+h][k] * Blcl[j*{W}+w][k];
-              float *p_vecT = &vecT;
-              ((float*)&acc[h])[w] += {'+'.join(f'p_vecT[{w_}]' for w_ in range(W))};
+              //float{X} vecT = Alcl[i*{H}+h][k] * Blcl[j*{W}+w][k]; float *p_vecT = &vecT;
+              //((float*)&acc[h])[w] += {'+'.join(f'p_vecT[{w_}]' for w_ in range(W))};
+
+              // slightly faster
+              float{X} a=Alcl[i*{H}+h][k], b=Blcl[j*{W}+w][k];
+              {"float v=a*b;" if W==0 else ""} {"float v=dot(a,b);" if W<=4 else ""}
+              {"float v=" + "+".join(f"dot((float4)a.s{i},(float4)b.s{i})" for _ ,i in zip(range(W//4), ("0123","4567","89AB","CDEF"))) + ";" if W > 4 else ""}
+              ((float*)&acc[h])[w] += v;
             }}
           }}
         }}
