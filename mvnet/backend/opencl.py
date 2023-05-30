@@ -48,6 +48,7 @@ class CLContext:
     if DEBUG and name == "matmul_op":
       print(f"[DEBUG] src {name}: \n {src}")
     program = pyopencl.Program(self.ctx, src).build(options=[
+      #"-cl-nv-arch", "sm_80"  # not working
       #"-cl-nv-verbose"  # use with PYOPENCL_COMPILER_OUTPUT=1
       #"-cl-opt-disable",
       #"-cl-mad-enable",
