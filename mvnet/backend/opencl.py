@@ -48,8 +48,6 @@ class CLContext:
     if DEBUG and name == "matmul_op":
       print(f"[DEBUG] src {name}: \n {src}")
     program = pyopencl.Program(self.ctx, src).build(options=[
-      #"-cl-nv-arch", "sm_80"  # not working
-      #"-cl-nv-verbose"  # use with PYOPENCL_COMPILER_OUTPUT=1
       #"-cl-opt-disable",
       #"-cl-mad-enable",
       #"-cl-single-precision-constant",
@@ -57,7 +55,8 @@ class CLContext:
     ])
     if DEBUG and name == "matmul_op":
       print(f"[DEBUG] src {name}: \n {src}")
-      print(f"[DEBUG] disassembler: \n {program.binaries[0].decode()}")
+      self.dump(program)
+
     kernel = getattr(program, name)
     return lambda *args: kernel(self.queue, *args)
 
@@ -75,6 +74,23 @@ class CLContext:
 
   def enqueue(self, task, *args, **kwargs):
     getattr(pyopencl, f"enqueue_{task}")(self.queue, *args, **kwargs).wait()
+
+  def dump(self, prg):
+    import os
+    import re
+    import subprocess
+    tmpdir = "/tmp/opencl"
+    os.makedirs(tmpdir, exist_ok=True)
+    for binary in prg.binaries:
+      res = binary[binary.index(b"// Generated"):].decode("utf-8")
+      with open(os.path.join(tmpdir, "cl.ptx"), "w", encoding="utf-8") as f:
+        f.write(res)
+      target = re.findall(".target sm_[0-9]*", res, re.MULTILINE)[0]
+      subprocess.run(f"ptxas cl.ptx --verbose --gpu-name={target[8:]} =-warn-on-spills", shell=True, cwd=tmpdir, check=True)
+      ret = subprocess.run("cuobjdump -sass elf.o", cwd=tmpdir, capture_output=True, shell=True, check=True)
+      with open(os.path.join(tmpdir, "cl.sass"), "w", encoding="utf-8") as f:
+        f.write(ret.stdout.decode("utf-8"))
+    print(res)
 
 cl = CLContext()
 
@@ -315,6 +331,7 @@ def matmul_op(op_info):
     gs //= 2
     H = 2 if gs != 1 else 1
 
+    # mma (https://docs.nvidia.com/cuda/archive/10.1/parallel-thread-execution/index.html#warp-level-matrix-instructions-mma)
     op = cl.build("matmul_op", rf"""
     __kernel void matmul_op(
       int BS, int M, int N, int K,

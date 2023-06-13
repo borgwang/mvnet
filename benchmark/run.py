@@ -6,6 +6,11 @@ from utils import Timer
 from mvnet.backend.opencl import CLArray, cl
 from mvnet.env import BACKEND, LAZY
 
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
+print("torch.backends.cuda.matmul.allow_tf32: ", torch.backends.cuda.matmul.allow_tf32)
+print("torch.backends.cudnn.allow_tf32: ", torch.backends.cudnn.allow_tf32)
+
 FS = {
   "UNDERLINE": "\033[4m",
   "BLUE": "\033[94m",
